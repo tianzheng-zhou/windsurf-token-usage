@@ -46,6 +46,13 @@ function fmtK(n: number): string {
   return n.toString();
 }
 
+function fmtCost(n: number): string {
+  if (n < 0.005) {
+    return "<$0.01";
+  }
+  return "$" + n.toFixed(2);
+}
+
 function fmtTime(iso: string): string {
   if (!iso) {
     return "";
@@ -60,7 +67,7 @@ function fmtTime(iso: string): string {
 }
 
 function getHtml(data: DashboardData): string {
-  const { conversations, grandTotal, fetchedAt } = data;
+  const { conversations, grandTotal, estimatedCost, fetchedAt } = data;
 
   const rows = conversations
     .map((c, i) => {
@@ -79,11 +86,12 @@ function getHtml(data: DashboardData): string {
           ${escHtml(c.summary)}
           <span class="meta">${c.turns} turns · ${c.stepCount} steps</span>
         </td>
-        <td class="model">${escHtml(shortModel(c.model))}</td>
+        <td class="model">${c.models.map(m => escHtml(shortModel(m))).join("<br/>")}</td>
         <td class="num">${fmt(c.usage.inputTokens)}</td>
         <td class="num">${fmt(c.usage.outputTokens)}</td>
         <td class="num">${fmt(c.usage.cachedTokens)}</td>
         <td class="num total">${fmtK(c.usage.total)}</td>
+        <td class="num cost">${fmtCost(c.estimatedCost.totalCost)}</td>
         <td class="bar-cell">
           <div class="bar" style="width:${barWidth}%"></div>
           <span class="bar-label">${pct}%</span>
@@ -132,7 +140,7 @@ h1 {
 }
 .cards {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(5, 1fr);
   gap: 16px;
   margin-bottom: 28px;
 }
@@ -157,6 +165,8 @@ h1 {
 .card.output .value { color: var(--accent2); }
 .card.cached .value { color: var(--accent3); }
 .card.total .value { color: var(--danger); }
+.card.cost .value { color: #f9e2af; }
+.card .sub { font-size: 11px; color: var(--text-dim); margin-top: 4px; }
 
 table {
   width: 100%;
@@ -198,6 +208,10 @@ td.total {
   font-weight: 700;
   color: var(--danger);
 }
+td.cost {
+  font-weight: 600;
+  color: #f9e2af;
+}
 td.summary {
   max-width: 260px;
 }
@@ -234,7 +248,7 @@ td.bar-cell {
 <body>
   <h1>⚡ Windsurf Token Usage</h1>
   <div class="subtitle">
-    ${conversations.length} conversations · Updated ${fmtTime(fetchedAt)}
+    ${conversations.length} conversations · Updated ${fmtTime(fetchedAt)} · Cost based on official API pricing
   </div>
 
   <div class="cards">
@@ -254,6 +268,11 @@ td.bar-cell {
       <div class="label">Total</div>
       <div class="value">${fmtK(grandTotal.total)}</div>
     </div>
+    <div class="card cost">
+      <div class="label">Est. API Cost</div>
+      <div class="value">${fmtCost(estimatedCost.totalCost)}</div>
+      <div class="sub">In: ${fmtCost(estimatedCost.inputCost)} · Out: ${fmtCost(estimatedCost.outputCost)} · Cache: ${fmtCost(estimatedCost.cachedCost)}</div>
+    </div>
   </div>
 
   <table>
@@ -266,6 +285,7 @@ td.bar-cell {
         <th class="r">Output</th>
         <th class="r">Cached</th>
         <th class="r">Total</th>
+        <th class="r">Est. Cost</th>
         <th>Share</th>
         <th>Last Active</th>
       </tr>

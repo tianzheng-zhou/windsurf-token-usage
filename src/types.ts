@@ -27,19 +27,28 @@ export interface TokenUsage {
   total: number;
 }
 
+export interface CostEstimate {
+  inputCost: number;
+  outputCost: number;
+  cachedCost: number;
+  totalCost: number;
+}
+
 export interface ConversationStats {
   cascadeId: string;
   summary: string;
   turns: number;
   stepCount: number;
-  model: string;
+  models: string[];
   createdTime: string;
   lastModifiedTime: string;
   usage: TokenUsage;
+  estimatedCost: CostEstimate;
 }
 
 export interface DashboardData {
   conversations: ConversationStats[];
   grandTotal: TokenUsage;
+  estimatedCost: CostEstimate;
   fetchedAt: string;
 }

@@ -23,7 +23,9 @@ async function refreshData(showProgress = false): Promise<void> {
       lastData = await fetchDashboardData();
       const t = lastData.grandTotal;
       statusBarItem.text = `$(dashboard) ${fmtK(t.total)} tokens`;
-      statusBarItem.tooltip = `Windsurf Token Usage\nInput: ${fmtK(t.inputTokens)} · Output: ${fmtK(t.outputTokens)} · Cached: ${fmtK(t.cachedTokens)}\n${lastData.conversations.length} conversations\nClick to open dashboard`;
+      const cost = lastData.estimatedCost.totalCost;
+      const costStr = cost < 0.005 ? "<$0.01" : "$" + cost.toFixed(2);
+      statusBarItem.tooltip = `Windsurf Token Usage\nInput: ${fmtK(t.inputTokens)} · Output: ${fmtK(t.outputTokens)} · Cached: ${fmtK(t.cachedTokens)}\nEst. API Cost: ${costStr}\n${lastData.conversations.length} conversations\nClick to open dashboard`;
       updateDashboard(lastData);
     } catch (e: any) {
       statusBarItem.text = "$(warning) Tokens: N/A";
