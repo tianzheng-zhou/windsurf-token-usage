@@ -189,7 +189,10 @@ async function extractCsrf(): Promise<WindsurfCredentials | null> {
     for (const methodName of methods) {
       if (typeof devClient[methodName] === "function") {
         try {
-          await devClient[methodName]({});
+          await Promise.race([
+            devClient[methodName]({}),
+            new Promise((_, rej) => setTimeout(() => rej(new Error("devClient timeout")), 5000)),
+          ]);
         } catch {
           /* expected — we only need the intercepted headers */
         }
@@ -217,7 +220,17 @@ function httpPost(
   body: string
 ): Promise<{ status: number; body: string }> {
   return new Promise((resolve, reject) => {
+    let settled = false;
     const u = new URL(url);
+
+    const hardTimer = setTimeout(() => {
+      if (!settled) {
+        settled = true;
+        req.destroy();
+        reject(new Error("timeout (hard)"));
+      }
+    }, 10000);
+
     const req = http.request(
       {
         hostname: u.hostname,
@@ -234,15 +247,29 @@ function httpPost(
       (res) => {
         let data = "";
         res.on("data", (chunk) => (data += chunk));
-        res.on("end", () =>
-          resolve({ status: res.statusCode ?? 0, body: data })
-        );
+        res.on("end", () => {
+          if (!settled) {
+            settled = true;
+            clearTimeout(hardTimer);
+            resolve({ status: res.statusCode ?? 0, body: data });
+          }
+        });
       }
     );
-    req.on("error", reject);
+    req.on("error", (err) => {
+      if (!settled) {
+        settled = true;
+        clearTimeout(hardTimer);
+        reject(err);
+      }
+    });
     req.on("timeout", () => {
-      req.destroy();
-      reject(new Error("timeout"));
+      if (!settled) {
+        settled = true;
+        clearTimeout(hardTimer);
+        req.destroy();
+        reject(new Error("timeout"));
+      }
     });
     req.write(body);
     req.end();
@@ -293,17 +320,19 @@ export async function fetchDashboardData(): Promise<DashboardData> {
     total: 0,
   };
 
-  // Fetch steps for each trajectory and extract token usage
-  for (const cascadeId of cascadeIds) {
-    const summary = summariesMap[cascadeId];
+  // Fetch steps for each trajectory (parallel, max 5 concurrent)
+  const CONCURRENCY = 5;
+  const entries = cascadeIds.map((id) => ({ cascadeId: id, summary: summariesMap[id] }));
 
+  async function processCascade(c: WindsurfCredentials, entry: { cascadeId: string; summary: TrajectorySummary }) {
+    const { cascadeId, summary } = entry;
     let stepsData: any;
     try {
-      stepsData = await apiCall(creds, "GetCascadeTrajectorySteps", {
+      stepsData = await apiCall(c, "GetCascadeTrajectorySteps", {
         cascade_id: cascadeId,
       });
     } catch {
-      continue;
+      return null;
     }
 
     const steps: any[] = stepsData.steps ?? [];
@@ -372,14 +401,7 @@ export async function fetchDashboardData(): Promise<DashboardData> {
     }
     estCost.totalCost = estCost.inputCost + estCost.outputCost + estCost.cachedCost;
 
-    grandTotal.inputTokens += usage.inputTokens;
-    grandTotal.outputTokens += usage.outputTokens;
-    grandTotal.cachedTokens += usage.cachedTokens;
-    grandCost.inputCost += estCost.inputCost;
-    grandCost.outputCost += estCost.outputCost;
-    grandCost.cachedCost += estCost.cachedCost;
-
-    conversations.push({
+    return {
       cascadeId,
       summary: summary.summary ?? "(untitled)",
       turns,
@@ -389,7 +411,25 @@ export async function fetchDashboardData(): Promise<DashboardData> {
       lastModifiedTime: summary.lastModifiedTime ?? "",
       usage,
       estimatedCost: estCost,
-    });
+    } as ConversationStats;
+  }
+
+  // Run with concurrency limit
+  for (let i = 0; i < entries.length; i += CONCURRENCY) {
+    const batch = entries.slice(i, i + CONCURRENCY);
+    const results = await Promise.all(batch.map((e) => processCascade(creds, e)));
+    for (const conv of results) {
+      if (!conv) {
+        continue;
+      }
+      grandTotal.inputTokens += conv.usage.inputTokens;
+      grandTotal.outputTokens += conv.usage.outputTokens;
+      grandTotal.cachedTokens += conv.usage.cachedTokens;
+      grandCost.inputCost += conv.estimatedCost.inputCost;
+      grandCost.outputCost += conv.estimatedCost.outputCost;
+      grandCost.cachedCost += conv.estimatedCost.cachedCost;
+      conversations.push(conv);
+    }
   }
 
   grandTotal.total =
