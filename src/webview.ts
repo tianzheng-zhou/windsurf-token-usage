@@ -40,7 +40,7 @@ export class TokenUsageViewProvider implements vscode.WebviewViewProvider {
 function getLoadingHtml(): string {
   return `<!DOCTYPE html>
 <html lang="en"><head><meta charset="UTF-8"/>
-<style>body{font-family:sans-serif;color:#cdd6f4;background:#1e1e2e;display:flex;align-items:center;justify-content:center;height:100vh;}p{color:#a6adc8;}</style>
+<style>body{font-family:var(--vscode-font-family,sans-serif);color:var(--vscode-foreground);background:var(--vscode-sideBar-background,transparent);display:flex;align-items:center;justify-content:center;height:100vh;}p{color:var(--vscode-descriptionForeground);}</style>
 </head><body><p>Loading token data…</p></body></html>`;
 }
 
@@ -122,19 +122,22 @@ function getHtml(data: DashboardData): string {
 <title>Windsurf Token Usage</title>
 <style>
 :root {
-  --bg: #1e1e2e;
-  --surface: #282840;
-  --border: #3b3b5c;
-  --text: #cdd6f4;
-  --text-dim: #a6adc8;
-  --accent: #89b4fa;
-  --accent2: #a6e3a1;
-  --accent3: #fab387;
-  --danger: #f38ba8;
+  --bg: var(--vscode-sideBar-background, var(--vscode-editor-background));
+  --surface: var(--vscode-editorWidget-background, var(--vscode-editor-background));
+  --border: var(--vscode-widget-border, var(--vscode-editorWidget-border, rgba(128,128,128,0.2)));
+  --text: var(--vscode-foreground);
+  --text-dim: var(--vscode-descriptionForeground);
+  --accent: var(--vscode-textLink-foreground);
+  --accent2: var(--vscode-testing-iconPassed, var(--vscode-charts-green, #4ec94e));
+  --accent3: var(--vscode-charts-orange, var(--vscode-editorWarning-foreground, #cca700));
+  --danger: var(--vscode-errorForeground, var(--vscode-charts-red, #f44));
+  --cost-color: var(--vscode-charts-yellow, var(--vscode-editorWarning-foreground, #cca700));
+  --font: var(--vscode-font-family, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif);
+  --font-mono: var(--vscode-editor-font-family, 'JetBrains Mono', 'Fira Code', monospace);
 }
 * { margin:0; padding:0; box-sizing:border-box; }
 body {
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  font-family: var(--font);
   background: var(--bg);
   color: var(--text);
   padding: 12px;
@@ -181,7 +184,7 @@ h1 {
 .card.output .value { color: var(--accent2); }
 .card.cached .value { color: var(--accent3); }
 .card.total .value { color: var(--danger); }
-.card.cost .value { color: #f9e2af; }
+.card.cost .value { color: var(--cost-color); }
 .card .sub { font-size: 10px; color: var(--text-dim); margin-top: 2px; }
 
 .section-title {
@@ -216,7 +219,7 @@ h1 {
 .conv-cost {
   font-size: 12px;
   font-weight: 700;
-  color: #f9e2af;
+  color: var(--cost-color);
 }
 .conv-summary {
   font-size: 12px;
@@ -239,7 +242,7 @@ h1 {
   flex-wrap: wrap;
   gap: 6px;
   font-size: 10px;
-  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+  font-family: var(--font-mono);
   margin-bottom: 4px;
 }
 .t-in { color: var(--accent); }
