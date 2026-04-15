@@ -11,6 +11,24 @@
   "activationEvents": ["onStartupFinished"],
   "main": "./out/extension.js",
   "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "windsurf-token-usage",
+          "title": "Token Usage",
+          "icon": "$(dashboard)"
+        }
+      ]
+    },
+    "views": {
+      "windsurf-token-usage": [
+        {
+          "type": "webview",
+          "id": "windsurf-token-usage.dashboard",
+          "name": "Dashboard"
+        }
+      ]
+    },
     "commands": [
       {
         "command": "windsurf-token-usage.show",

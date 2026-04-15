@@ -1,10 +1,11 @@
 import * as vscode from "vscode";
 import { fetchDashboardData, getCredentials, clearCredentials } from "./api";
-import { showDashboard, updateDashboard } from "./webview";
+import { TokenUsageViewProvider } from "./webview";
 import type { DashboardData } from "./types";
 
 let statusBarItem: vscode.StatusBarItem;
 let lastData: DashboardData | null = null;
+let viewProvider: TokenUsageViewProvider;
 
 function fmtK(n: number): string {
   if (n >= 1_000_000) {
@@ -26,7 +27,7 @@ async function refreshData(showProgress = false): Promise<void> {
       const cost = lastData.estimatedCost.totalCost;
       const costStr = cost < 0.005 ? "<$0.01" : "$" + cost.toFixed(2);
       statusBarItem.tooltip = `Windsurf Token Usage\nInput: ${fmtK(t.inputTokens)} · Output: ${fmtK(t.outputTokens)} · Cached: ${fmtK(t.cachedTokens)}\nEst. API Cost: ${costStr}\n${lastData.conversations.length} conversations\nClick to open dashboard`;
-      updateDashboard(lastData);
+      viewProvider.update(lastData);
     } catch (e: any) {
       statusBarItem.text = "$(warning) Tokens: N/A";
       statusBarItem.tooltip = `Windsurf Token Usage\nError: ${e.message}`;
@@ -58,6 +59,15 @@ export function activate(context: vscode.ExtensionContext) {
     return;
   }
 
+  // Sidebar view provider
+  viewProvider = new TokenUsageViewProvider(context);
+  context.subscriptions.push(
+    vscode.window.registerWebviewViewProvider(
+      TokenUsageViewProvider.viewType,
+      viewProvider
+    )
+  );
+
   // Status bar item
   statusBarItem = vscode.window.createStatusBarItem(
     vscode.StatusBarAlignment.Right,
@@ -76,8 +86,9 @@ export function activate(context: vscode.ExtensionContext) {
         await refreshData(true);
       }
       if (lastData) {
-        showDashboard(context, lastData);
+        viewProvider.update(lastData);
       }
+      viewProvider.reveal();
     }),
     vscode.commands.registerCommand(
       "windsurf-token-usage.refresh",
@@ -85,8 +96,9 @@ export function activate(context: vscode.ExtensionContext) {
         clearCredentials();
         await refreshData(true);
         if (lastData) {
-          showDashboard(context, lastData);
+          viewProvider.update(lastData);
         }
+        viewProvider.reveal();
       }
     )
   );

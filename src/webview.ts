@@ -1,35 +1,47 @@
 import * as vscode from "vscode";
 import type { DashboardData } from "./types";
 
-let panel: vscode.WebviewPanel | undefined;
+export class TokenUsageViewProvider implements vscode.WebviewViewProvider {
+  public static readonly viewType = "windsurf-token-usage.dashboard";
 
-export function showDashboard(
-  context: vscode.ExtensionContext,
-  data: DashboardData
-): void {
-  if (panel) {
-    panel.reveal(vscode.ViewColumn.One);
-    panel.webview.html = getHtml(data);
-    return;
+  private _view?: vscode.WebviewView;
+  private _data?: DashboardData;
+
+  constructor(private readonly _extensionContext: vscode.ExtensionContext) {}
+
+  public resolveWebviewView(
+    webviewView: vscode.WebviewView,
+    _context: vscode.WebviewViewResolveContext,
+    _token: vscode.CancellationToken
+  ): void {
+    this._view = webviewView;
+    webviewView.webview.options = { enableScripts: false };
+    if (this._data) {
+      webviewView.webview.html = getHtml(this._data);
+    } else {
+      webviewView.webview.html = getLoadingHtml();
+    }
   }
 
-  panel = vscode.window.createWebviewPanel(
-    "windsurfTokenUsage",
-    "Windsurf Token Usage",
-    vscode.ViewColumn.One,
-    { enableScripts: false, retainContextWhenHidden: true }
-  );
+  public update(data: DashboardData): void {
+    this._data = data;
+    if (this._view) {
+      this._view.webview.html = getHtml(data);
+    }
+  }
 
-  panel.webview.html = getHtml(data);
-  panel.onDidDispose(() => {
-    panel = undefined;
-  });
+  public reveal(): void {
+    if (this._view) {
+      this._view.show?.(true);
+    }
+  }
 }
 
-export function updateDashboard(data: DashboardData): void {
-  if (panel) {
-    panel.webview.html = getHtml(data);
-  }
+function getLoadingHtml(): string {
+  return `<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"/>
+<style>body{font-family:sans-serif;color:#cdd6f4;background:#1e1e2e;display:flex;align-items:center;justify-content:center;height:100vh;}p{color:#a6adc8;}</style>
+</head><body><p>Loading token data…</p></body></html>`;
 }
 
 function fmt(n: number): string {
@@ -69,7 +81,7 @@ function fmtTime(iso: string): string {
 function getHtml(data: DashboardData): string {
   const { conversations, grandTotal, estimatedCost, fetchedAt } = data;
 
-  const rows = conversations
+  const convItems = conversations
     .map((c, i) => {
       const pct =
         grandTotal.total > 0
@@ -80,24 +92,25 @@ function getHtml(data: DashboardData): string {
           ? Math.max(1, (c.usage.total / grandTotal.total) * 100)
           : 0;
       return `
-      <tr>
-        <td class="num">${i + 1}</td>
-        <td class="summary" title="${escHtml(c.cascadeId)}">
-          ${escHtml(c.summary)}
-          <span class="meta">${c.turns} turns · ${c.stepCount} steps</span>
-        </td>
-        <td class="model">${c.models.map(m => escHtml(shortModel(m))).join("<br/>")}</td>
-        <td class="num">${fmt(c.usage.inputTokens)}</td>
-        <td class="num">${fmt(c.usage.outputTokens)}</td>
-        <td class="num">${fmt(c.usage.cachedTokens)}</td>
-        <td class="num total">${fmtK(c.usage.total)}</td>
-        <td class="num cost">${fmtCost(c.estimatedCost.totalCost)}</td>
-        <td class="bar-cell">
+      <div class="conv-item">
+        <div class="conv-header">
+          <span class="conv-num">#${i + 1}</span>
+          <span class="conv-cost">${fmtCost(c.estimatedCost.totalCost)}</span>
+        </div>
+        <div class="conv-summary" title="${escHtml(c.cascadeId)}">${escHtml(c.summary)}</div>
+        <div class="conv-meta">${c.turns} turns · ${c.stepCount} steps · ${fmtTime(c.lastModifiedTime)}</div>
+        <div class="conv-models">${c.models.map(m => escHtml(shortModel(m))).join(", ")}</div>
+        <div class="conv-tokens">
+          <span class="t-in">In ${fmtK(c.usage.inputTokens)}</span>
+          <span class="t-out">Out ${fmtK(c.usage.outputTokens)}</span>
+          <span class="t-cache">Cache ${fmtK(c.usage.cachedTokens)}</span>
+          <span class="t-total">${fmtK(c.usage.total)}</span>
+        </div>
+        <div class="conv-bar-row">
           <div class="bar" style="width:${barWidth}%"></div>
           <span class="bar-label">${pct}%</span>
-        </td>
-        <td class="time">${fmtTime(c.lastModifiedTime)}</td>
-      </tr>`;
+        </div>
+      </div>`;
     })
     .join("\n");
 
@@ -124,41 +137,44 @@ body {
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   background: var(--bg);
   color: var(--text);
-  padding: 24px;
+  padding: 12px;
   line-height: 1.5;
 }
 h1 {
-  font-size: 22px;
+  font-size: 16px;
   font-weight: 600;
-  margin-bottom: 8px;
+  margin-bottom: 4px;
   color: var(--accent);
 }
 .subtitle {
   color: var(--text-dim);
-  font-size: 13px;
-  margin-bottom: 24px;
+  font-size: 11px;
+  margin-bottom: 12px;
 }
 .cards {
   display: grid;
-  grid-template-columns: repeat(5, 1fr);
-  gap: 16px;
-  margin-bottom: 28px;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-bottom: 16px;
 }
 .card {
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 16px 20px;
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+.card.wide {
+  grid-column: 1 / -1;
 }
 .card .label {
-  font-size: 12px;
+  font-size: 10px;
   text-transform: uppercase;
-  letter-spacing: 0.5px;
+  letter-spacing: 0.4px;
   color: var(--text-dim);
-  margin-bottom: 4px;
+  margin-bottom: 2px;
 }
 .card .value {
-  font-size: 28px;
+  font-size: 20px;
   font-weight: 700;
 }
 .card.input .value { color: var(--accent); }
@@ -166,134 +182,120 @@ h1 {
 .card.cached .value { color: var(--accent3); }
 .card.total .value { color: var(--danger); }
 .card.cost .value { color: #f9e2af; }
-.card .sub { font-size: 11px; color: var(--text-dim); margin-top: 4px; }
+.card .sub { font-size: 10px; color: var(--text-dim); margin-top: 2px; }
 
-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 13px;
-}
-thead th {
-  text-align: left;
-  padding: 10px 8px;
-  border-bottom: 2px solid var(--border);
-  color: var(--text-dim);
+.section-title {
+  font-size: 12px;
   font-weight: 600;
-  font-size: 11px;
   text-transform: uppercase;
   letter-spacing: 0.3px;
-  position: sticky;
-  top: 0;
-  background: var(--bg);
-}
-thead th.r { text-align: right; }
-tbody tr {
+  color: var(--text-dim);
+  margin-bottom: 8px;
+  padding-bottom: 4px;
   border-bottom: 1px solid var(--border);
-  transition: background 0.15s;
 }
-tbody tr:hover {
+
+.conv-item {
   background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin-bottom: 8px;
 }
-td {
-  padding: 8px;
-  vertical-align: middle;
+.conv-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 4px;
 }
-td.num {
-  text-align: right;
-  font-variant-numeric: tabular-nums;
-  font-family: 'JetBrains Mono', 'Fira Code', monospace;
-  font-size: 12px;
-}
-td.total {
+.conv-num {
+  font-size: 11px;
   font-weight: 700;
-  color: var(--danger);
+  color: var(--text-dim);
 }
-td.cost {
-  font-weight: 600;
+.conv-cost {
+  font-size: 12px;
+  font-weight: 700;
   color: #f9e2af;
 }
-td.summary {
-  max-width: 260px;
+.conv-summary {
+  font-size: 12px;
+  font-weight: 500;
+  margin-bottom: 4px;
+  word-break: break-word;
 }
-td.summary .meta {
-  display: block;
-  font-size: 11px;
+.conv-meta {
+  font-size: 10px;
   color: var(--text-dim);
+  margin-bottom: 2px;
 }
-td.model {
+.conv-models {
+  font-size: 10px;
   color: var(--text-dim);
-  font-size: 11px;
+  margin-bottom: 6px;
 }
-td.time {
-  color: var(--text-dim);
-  font-size: 11px;
-  white-space: nowrap;
+.conv-tokens {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  font-size: 10px;
+  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+  margin-bottom: 4px;
 }
-td.bar-cell {
-  width: 120px;
-  position: relative;
+.t-in { color: var(--accent); }
+.t-out { color: var(--accent2); }
+.t-cache { color: var(--accent3); }
+.t-total { color: var(--danger); font-weight: 700; }
+.conv-bar-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
 .bar {
-  height: 6px;
-  border-radius: 3px;
+  flex: 0 0 auto;
+  height: 4px;
+  border-radius: 2px;
   background: var(--accent);
   opacity: 0.6;
 }
 .bar-label {
-  font-size: 10px;
+  font-size: 9px;
   color: var(--text-dim);
 }
 </style>
 </head>
 <body>
-  <h1>⚡ Windsurf Token Usage</h1>
+  <h1>⚡ Token Usage</h1>
   <div class="subtitle">
-    ${conversations.length} conversations · Updated ${fmtTime(fetchedAt)} · Cost based on official API pricing
+    ${conversations.length} conversations · ${fmtTime(fetchedAt)}
   </div>
 
   <div class="cards">
     <div class="card input">
-      <div class="label">Input Tokens</div>
+      <div class="label">Input</div>
       <div class="value">${fmtK(grandTotal.inputTokens)}</div>
     </div>
     <div class="card output">
-      <div class="label">Output Tokens</div>
+      <div class="label">Output</div>
       <div class="value">${fmtK(grandTotal.outputTokens)}</div>
     </div>
     <div class="card cached">
-      <div class="label">Cached Tokens</div>
+      <div class="label">Cached</div>
       <div class="value">${fmtK(grandTotal.cachedTokens)}</div>
     </div>
     <div class="card total">
       <div class="label">Total</div>
       <div class="value">${fmtK(grandTotal.total)}</div>
     </div>
-    <div class="card cost">
+    <div class="card cost wide">
       <div class="label">Est. API Cost</div>
       <div class="value">${fmtCost(estimatedCost.totalCost)}</div>
       <div class="sub">In: ${fmtCost(estimatedCost.inputCost)} · Out: ${fmtCost(estimatedCost.outputCost)} · Cache: ${fmtCost(estimatedCost.cachedCost)}</div>
     </div>
   </div>
 
-  <table>
-    <thead>
-      <tr>
-        <th>#</th>
-        <th>Conversation</th>
-        <th>Model</th>
-        <th class="r">Input</th>
-        <th class="r">Output</th>
-        <th class="r">Cached</th>
-        <th class="r">Total</th>
-        <th class="r">Est. Cost</th>
-        <th>Share</th>
-        <th>Last Active</th>
-      </tr>
-    </thead>
-    <tbody>
-      ${rows}
-    </tbody>
-  </table>
+  <div class="section-title">Conversations</div>
+  ${convItems}
 </body>
 </html>`;
 }
