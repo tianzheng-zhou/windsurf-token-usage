@@ -17,7 +17,17 @@ export class TokenUsageViewProvider implements vscode.WebviewViewProvider {
     _token: vscode.CancellationToken
   ): void {
     this._view = webviewView;
-    webviewView.webview.options = { enableScripts: false };
+    webviewView.webview.options = {
+      enableScripts: false,
+      // Allow clickable command:-URI anchors for our own commands (e.g. the
+      // "Open Details →" link below). No scripts are still enabled.
+      enableCommandUris: [
+        "windsurf-token-usage.openPanel",
+        "windsurf-token-usage.refresh",
+        "windsurf-token-usage.refreshFull",
+        "windsurf-token-usage.clearHistory",
+      ],
+    } as any;
     this._render();
   }
 
@@ -40,12 +50,12 @@ export class TokenUsageViewProvider implements vscode.WebviewViewProvider {
       return;
     }
     this._view.webview.html = this._data
-      ? getHtml(this._data, this._deltas)
+      ? getSidebarHtml(this._data, this._deltas)
       : getLoadingHtml(this._deltas);
   }
 }
 
-function getLoadingHtml(deltas: DailyDelta[] = []): string {
+export function getLoadingHtml(deltas: DailyDelta[] = []): string {
   const trend = buildTrendSection(deltas);
   const body = trend
     ? `<h1>⚡ Token Usage</h1><div class="subtitle">Fetching current data…</div>${trend}`
@@ -90,8 +100,111 @@ function fmtTime(iso: string): string {
   });
 }
 
-function getHtml(data: DashboardData, deltas: DailyDelta[] = []): string {
+/**
+ * Renders one "cluster": a section title followed by 4 token cards + 1 wide
+ * cost card. Shared between Total and Today groups, and between sidebar and
+ * panel renderers, so both views stay visually consistent.
+ */
+function buildCardCluster(
+  sectionTitle: string,
+  tokens: { inputTokens: number; outputTokens: number; cachedTokens: number; total: number },
+  totalCost: number,
+  costBreakdown?: { inputCost: number; outputCost: number; cachedCost: number }
+): string {
+  const costSub = costBreakdown
+    ? `<div class="sub">In: ${fmtCost(costBreakdown.inputCost)} · Out: ${fmtCost(costBreakdown.outputCost)} · Cache: ${fmtCost(costBreakdown.cachedCost)}</div>`
+    : "";
+  return `
+  <div class="section-title">${escHtml(sectionTitle)}</div>
+  <div class="cards">
+    <div class="card input">
+      <div class="label">Input</div>
+      <div class="value">${fmtK(tokens.inputTokens)}</div>
+    </div>
+    <div class="card output">
+      <div class="label">Output</div>
+      <div class="value">${fmtK(tokens.outputTokens)}</div>
+    </div>
+    <div class="card cached">
+      <div class="label">Cached</div>
+      <div class="value">${fmtK(tokens.cachedTokens)}</div>
+    </div>
+    <div class="card total">
+      <div class="label">Total</div>
+      <div class="value">${fmtK(tokens.total)}</div>
+    </div>
+    <div class="card cost wide">
+      <div class="label">Est. API Cost</div>
+      <div class="value">${fmtCost(totalCost)}</div>
+      ${costSub}
+    </div>
+  </div>`;
+}
+
+/**
+ * Pulls today's per-day breakdown out of a DashboardData, or returns zeros if
+ * no activity has been recorded for today yet.
+ */
+function getTodayTotals(data: DashboardData): {
+  tokens: { inputTokens: number; outputTokens: number; cachedTokens: number; total: number };
+  cost: number;
+} {
+  const todayStr = todayLocalDateString();
+  const today = data.byDay.find((d) => d.date === todayStr);
+  if (!today) {
+    return {
+      tokens: { inputTokens: 0, outputTokens: 0, cachedTokens: 0, total: 0 },
+      cost: 0,
+    };
+  }
+  return {
+    tokens: {
+      inputTokens: today.input,
+      outputTokens: today.output,
+      cachedTokens: today.cached,
+      total: today.tokens,
+    },
+    cost: today.cost,
+  };
+}
+
+/**
+ * Compact sidebar view: Total cluster + Today cluster. No trend, no
+ * conversation list — those live in the detail panel.
+ */
+export function getSidebarHtml(data: DashboardData, _deltas: DailyDelta[] = []): string {
   const { conversations, grandTotal, estimatedCost, fetchedAt, failedConversations, fullRefresh } = data;
+  const today = getTodayTotals(data);
+
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Windsurf Token Usage</title>
+<style>${baseStyles()}</style>
+</head>
+<body>
+  <h1>⚡ Token Usage</h1>
+  <div class="subtitle">
+    <span class="subtitle-info">${conversations.length} conversations${failedConversations > 0 ? ` · <span class="failed">${failedConversations} failed</span>` : ""} · ${fmtTime(fetchedAt)}${fullRefresh ? ` · <span class="badge-full">full</span>` : ""}</span>
+    <a class="open-details" href="command:windsurf-token-usage.openPanel" title="Open the full dashboard in the editor area">Open Details →</a>
+  </div>
+
+  ${buildCardCluster("Today", today.tokens, today.cost)}
+
+  ${buildCardCluster("Total", grandTotal, estimatedCost.totalCost, estimatedCost)}
+</body>
+</html>`;
+}
+
+/**
+ * Full detail panel: sidebar content + Trend charts + full Conversations list.
+ * Rendered into a WebviewPanel in the editor area for room to breathe.
+ */
+export function getPanelHtml(data: DashboardData, deltas: DailyDelta[] = []): string {
+  const { conversations, grandTotal, estimatedCost, fetchedAt, failedConversations, fullRefresh } = data;
+  const today = getTodayTotals(data);
 
   const convItems = conversations
     .map((c, i) => {
@@ -139,32 +252,12 @@ function getHtml(data: DashboardData, deltas: DailyDelta[] = []): string {
 <body>
   <h1>⚡ Token Usage</h1>
   <div class="subtitle">
-    ${conversations.length} conversations${failedConversations > 0 ? ` · <span class="failed">${failedConversations} failed</span>` : ""} · ${fmtTime(fetchedAt)}${fullRefresh ? ` · <span class="badge-full">full</span>` : ""}
+    <span class="subtitle-info">${conversations.length} conversations${failedConversations > 0 ? ` · <span class="failed">${failedConversations} failed</span>` : ""} · ${fmtTime(fetchedAt)}${fullRefresh ? ` · <span class="badge-full">full</span>` : ""}</span>
   </div>
 
-  <div class="cards">
-    <div class="card input">
-      <div class="label">Input</div>
-      <div class="value">${fmtK(grandTotal.inputTokens)}</div>
-    </div>
-    <div class="card output">
-      <div class="label">Output</div>
-      <div class="value">${fmtK(grandTotal.outputTokens)}</div>
-    </div>
-    <div class="card cached">
-      <div class="label">Cached</div>
-      <div class="value">${fmtK(grandTotal.cachedTokens)}</div>
-    </div>
-    <div class="card total">
-      <div class="label">Total</div>
-      <div class="value">${fmtK(grandTotal.total)}</div>
-    </div>
-    <div class="card cost wide">
-      <div class="label">Est. API Cost</div>
-      <div class="value">${fmtCost(estimatedCost.totalCost)}</div>
-      <div class="sub">In: ${fmtCost(estimatedCost.inputCost)} · Out: ${fmtCost(estimatedCost.outputCost)} · Cache: ${fmtCost(estimatedCost.cachedCost)}</div>
-  </div>
-  </div>
+  ${buildCardCluster("Today", today.tokens, today.cost)}
+
+  ${buildCardCluster("Total", grandTotal, estimatedCost.totalCost, estimatedCost)}
 
   ${trend}
 
@@ -212,6 +305,26 @@ h1 {
   color: var(--text-dim);
   font-size: 11px;
   margin-bottom: 12px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+.subtitle-info {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.open-details {
+  flex: 0 0 auto;
+  color: var(--accent);
+  text-decoration: none;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.open-details:hover {
+  text-decoration: underline;
 }
 .subtitle .failed {
   color: var(--danger);
@@ -407,26 +520,46 @@ function buildTrendSection(deltas: DailyDelta[]): string {
   `;
 }
 
+function todayLocalDateString(): string {
+  const d = new Date();
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
 function buildSparkline(
   deltas: DailyDelta[],
   metric: "tokens" | "cost"
 ): string {
   const recent = deltas.slice(-30);
   const values = recent.map((d) => (metric === "tokens" ? d.tokens : d.cost));
+  // Pull today's value by date match — otherwise on a zero-activity day we'd
+  // misleadingly label yesterday's bar as "Today".
+  const todayStr = todayLocalDateString();
+  const todayEntry = recent.find((d) => d.date === todayStr);
+  const todayValue = todayEntry
+    ? metric === "tokens"
+      ? todayEntry.tokens
+      : todayEntry.cost
+    : 0;
   const labelLast =
     metric === "tokens"
-      ? `Today: ${fmtK(values[values.length - 1] ?? 0)}`
-      : `Today: ${fmtCost(values[values.length - 1] ?? 0)}`;
+      ? `Today: ${fmtK(todayValue)}`
+      : `Today: ${fmtCost(todayValue)}`;
   const title = metric === "tokens" ? "Tokens / day" : "Cost / day";
 
   const nonZero = values.some((v) => v > 0);
-  if (recent.length < 2 || !nonZero) {
+  // Render the chart whenever there is at least one non-zero day — even a
+  // single-day bar is informative. Only fall back to the empty message when
+  // we have literally no usage on record (all zeros, or no days at all).
+  if (recent.length === 0 || !nonZero) {
     return `
       <div class="trend-head">
         <span class="trend-title">${title}</span>
         <span class="trend-last">${labelLast}</span>
       </div>
-      <div class="trend-empty">Collecting history… come back after another refresh.</div>
+      <div class="trend-empty">No usage recorded yet. Try a refresh after using Cascade.</div>
     `;
   }
 

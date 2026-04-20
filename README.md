@@ -23,6 +23,7 @@ All live under the `Windsurf Token Usage:` category in the command palette.
 | Command | What it does |
 |---|---|
 | `Show Token Usage Dashboard` | Opens the side-bar view and fetches data if none cached yet. |
+| `Open Details Panel` | Opens the dashboard in the editor area for a full-width view. Sidebar stays in place as an ambient summary. |
 | `Refresh Token Data` | **Incremental** refresh — reuses the per-cascade cache and existing CSRF credentials. Use this most of the time. |
 | `Refresh Token Data (Full)` | **Full** refresh — clears the CSRF cache *and* the per-cascade cache, then re-fetches every trajectory's steps. Use this if numbers look wrong or after a Windsurf upgrade. |
 | `Clear History` | Wipes the persisted daily snapshots used to draw the trend charts. |
@@ -66,6 +67,26 @@ Launch the extension development host with `F5` from VS Code / Windsurf.
 - No telemetry, no outbound network calls.
 
 ## Changelog
+
+### 0.2.4
+
+- **Today** cluster now sits above **Total** in both the sidebar and detail panel — the number you check most often is at the top.
+
+### 0.2.3
+
+- **Sidebar slimmed down** — now shows only two clusters of five numbers: overall **Total** and **Today** (Input / Output / Cached / Total tokens + estimated cost each). No conversation list, no trend chart.
+- **Trend charts moved to the Details Panel** along with the full conversation list. The sidebar becomes an ambient summary; the panel is the explore surface.
+- Per-day breakdown now carries Input / Output / Cached, not just an aggregate token count.
+
+### 0.2.2
+
+- **Refresh button in the view title bar** — refresh and Open Details now appear as icons at the top of the sidebar view; Full Refresh and Clear History live in the `…` overflow.
+- **Real "Today" number** — per-turn timestamps are now bucketed into calendar days, so the Trend chart shows today's actual consumption on the very first refresh instead of requiring an overnight baseline.
+- Sparkline renders even with a single non-zero day.
+
+### 0.2.1
+
+- Detail panel opens in the editor area via the new `Open Details Panel` command (also reachable from the `Open Details →` link at the top of the sidebar). Reuses the existing dashboard HTML; a future release will tab-ify it with a sortable conversation table.
 
 ### 0.2.0
 

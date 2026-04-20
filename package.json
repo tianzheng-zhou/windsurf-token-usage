@@ -2,7 +2,7 @@
   "name": "windsurf-token-usage",
   "displayName": "Windsurf Token Usage",
   "description": "Track and visualize Windsurf Cascade token consumption in real-time",
-  "version": "0.2.0",
+  "version": "0.2.4",
   "publisher": "tianzheng-zhou",
   "engines": {
     "vscode": "^1.85.0"
@@ -36,21 +36,54 @@
         "category": "Windsurf Token Usage"
       },
       {
+        "command": "windsurf-token-usage.openPanel",
+        "title": "Open Details Panel",
+        "category": "Windsurf Token Usage",
+        "icon": "$(open-preview)"
+      },
+      {
         "command": "windsurf-token-usage.refresh",
         "title": "Refresh Token Data",
-        "category": "Windsurf Token Usage"
+        "category": "Windsurf Token Usage",
+        "icon": "$(refresh)"
       },
       {
         "command": "windsurf-token-usage.refreshFull",
         "title": "Refresh Token Data (Full)",
-        "category": "Windsurf Token Usage"
+        "category": "Windsurf Token Usage",
+        "icon": "$(sync)"
       },
       {
         "command": "windsurf-token-usage.clearHistory",
         "title": "Clear History",
-        "category": "Windsurf Token Usage"
+        "category": "Windsurf Token Usage",
+        "icon": "$(trash)"
       }
     ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "windsurf-token-usage.refresh",
+          "when": "view == windsurf-token-usage.dashboard",
+          "group": "navigation@1"
+        },
+        {
+          "command": "windsurf-token-usage.openPanel",
+          "when": "view == windsurf-token-usage.dashboard",
+          "group": "navigation@2"
+        },
+        {
+          "command": "windsurf-token-usage.refreshFull",
+          "when": "view == windsurf-token-usage.dashboard",
+          "group": "1_refresh@1"
+        },
+        {
+          "command": "windsurf-token-usage.clearHistory",
+          "when": "view == windsurf-token-usage.dashboard",
+          "group": "2_danger@1"
+        }
+      ]
+    },
     "configuration": {
       "title": "Windsurf Token Usage",
       "properties": {

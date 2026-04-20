@@ -7,9 +7,55 @@ import type {
   CostEstimate,
   ConversationStats,
   DashboardData,
+  DailyBreakdown,
 } from "./types";
 
 let cachedCreds: WindsurfCredentials | null = null;
+
+// ── Per-turn date bucketing helpers ─────────────────────────────────────────
+
+function localDateString(d: Date): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+/**
+ * Best-effort timestamp extraction from a trajectory step. Windsurf hasn't
+ * committed to a stable field name; we probe common candidates and return
+ * the first one that parses to a valid Date. Returns null if none found.
+ */
+function extractStepTime(step: any): Date | null {
+  const candidates = [
+    step?.createdTime,
+    step?.createTime,
+    step?.timestamp,
+    step?.startTime,
+    step?.finishedTime,
+    step?.finishTime,
+    step?.updateTime,
+    step?.updatedTime,
+    step?.metadata?.createdTime,
+    step?.metadata?.createTime,
+    step?.metadata?.timestamp,
+    step?.metadata?.startTime,
+    step?.metadata?.finishedTime,
+    step?.metadata?.finishTime,
+    step?.metadata?.updateTime,
+    step?.metadata?.updatedTime,
+  ];
+  for (const c of candidates) {
+    if (c === undefined || c === null || c === "") {
+      continue;
+    }
+    const d = new Date(c);
+    if (!Number.isNaN(d.getTime()) && d.getFullYear() > 2000) {
+      return d;
+    }
+  }
+  return null;
+}
 
 // ── Model Pricing ($ per 1M tokens) ─────────────────────────────────────────
 
@@ -487,6 +533,16 @@ export async function fetchDashboardData(
     let turns = 0;
     const perModelUsage: Record<string, { input: number; output: number; cached: number }> = {};
 
+    // Per-day bucket for THIS cascade. Each turn's per-class tokens + cost
+    // are stamped against the turn's own local-date so "Today" in the UI
+    // reflects actual per-turn activity, not "growth since install".
+    const byDay: Record<string, { input: number; output: number; cached: number; cost: number }> = {};
+    // Fallback date: cascade-level lastModifiedTime when a step lacks any
+    // recognisable timestamp. Never leaves a turn unbucketed.
+    const fallbackDate = lastMod
+      ? localDateString(new Date(lastMod))
+      : localDateString(new Date());
+
     for (const step of steps) {
       if (
         step.type === "CORTEX_STEP_TYPE_USER_INPUT" &&
@@ -525,6 +581,23 @@ export async function fetchDashboardData(
         perModelUsage[modelUid].input += turnInput;
         perModelUsage[modelUid].output += turnOutput;
         perModelUsage[modelUid].cached += turnCached;
+
+        // Bucket this turn into its own calendar day.
+        const stepDate = extractStepTime(step);
+        const dateKey = stepDate ? localDateString(stepDate) : fallbackDate;
+        const p = getModelPricing(modelUid);
+        const turnCost = p
+          ? (turnInput / 1_000_000) * p.input +
+            (turnOutput / 1_000_000) * p.output +
+            (turnCached / 1_000_000) * p.cached
+          : 0;
+        if (!byDay[dateKey]) {
+          byDay[dateKey] = { input: 0, output: 0, cached: 0, cost: 0 };
+        }
+        byDay[dateKey].input += turnInput;
+        byDay[dateKey].output += turnOutput;
+        byDay[dateKey].cached += turnCached;
+        byDay[dateKey].cost += turnCost;
       }
     }
 
@@ -553,6 +626,7 @@ export async function fetchDashboardData(
       lastModifiedTime: lastMod,
       usage,
       estimatedCost: estCost,
+      byDay,
     };
 
     if (lastMod) {
@@ -602,6 +676,41 @@ export async function fetchDashboardData(
     }
   }
 
+  // Aggregate every conversation's per-day buckets into a global breakdown.
+  // Powers both the Today card on the sidebar and the Trend chart on the
+  // detail panel. Sourced from actual per-turn timestamps so it is correct
+  // on the very first refresh.
+  const byDayMap = new Map<
+    string,
+    { input: number; output: number; cached: number; cost: number }
+  >();
+  for (const conv of conversations) {
+    const cByDay = conv.byDay ?? {};
+    for (const [date, d] of Object.entries(cByDay)) {
+      const entry = byDayMap.get(date) ?? {
+        input: 0,
+        output: 0,
+        cached: 0,
+        cost: 0,
+      };
+      entry.input += d.input;
+      entry.output += d.output;
+      entry.cached += d.cached;
+      entry.cost += d.cost;
+      byDayMap.set(date, entry);
+    }
+  }
+  const byDay: DailyBreakdown[] = Array.from(byDayMap.entries())
+    .sort((a, b) => a[0].localeCompare(b[0]))
+    .map(([date, d]) => ({
+      date,
+      input: d.input,
+      output: d.output,
+      cached: d.cached,
+      tokens: d.input + d.output + d.cached,
+      cost: d.cost,
+    }));
+
   return {
     conversations,
     grandTotal,
@@ -609,5 +718,6 @@ export async function fetchDashboardData(
     fetchedAt: new Date().toISOString(),
     failedConversations: failed,
     fullRefresh: force,
+    byDay,
   };
 }

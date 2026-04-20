@@ -44,6 +44,23 @@ export interface ConversationStats {
   lastModifiedTime: string;
   usage: TokenUsage;
   estimatedCost: CostEstimate;
+  /**
+   * Per-day breakdown of this conversation's consumption, derived from
+   * per-turn timestamps. Key is local-time YYYY-MM-DD. Absent if a prior
+   * extension version populated the cache (treated as empty on read).
+   */
+  byDay?: Record<string, { input: number; output: number; cached: number; cost: number }>;
+}
+
+export interface DailyBreakdown {
+  /** Local-time YYYY-MM-DD. */
+  date: string;
+  input: number;
+  output: number;
+  cached: number;
+  /** Convenience sum — kept alongside the per-class breakdown for UI speed. */
+  tokens: number;
+  cost: number;
 }
 
 export interface DashboardData {
@@ -55,4 +72,10 @@ export interface DashboardData {
   failedConversations: number;
   /** Whether this refresh bypassed the per-cascade cache. */
   fullRefresh: boolean;
+  /**
+   * Per-day aggregate across all conversations, sorted ascending by date.
+   * Populated from per-turn timestamps — lets the UI show a real "Today"
+   * number on the first run, before any cross-day history is accumulated.
+   */
+  byDay: DailyBreakdown[];
 }

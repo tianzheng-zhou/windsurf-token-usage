@@ -5,6 +5,7 @@ import {
   clearConversationCache,
 } from "./api";
 import { TokenUsageViewProvider } from "./webview";
+import { TokenUsageDetailPanel } from "./panel";
 import {
   loadHistory,
   recordSnapshot,
@@ -43,9 +44,30 @@ function getRefreshIntervalMs(): number {
   return Math.max(MIN_REFRESH_SECONDS, Math.floor(sec)) * 1000;
 }
 
+/**
+ * Prefer the live per-day breakdown derived from turn timestamps — it lets
+ * the UI show a correct "Today" figure from the very first refresh. Fall
+ * back to day-over-day cumulative deltas only if no live data is available
+ * (e.g. before any fetch has completed).
+ */
+function currentDeltas() {
+  if (lastData && lastData.byDay && lastData.byDay.length > 0) {
+    return lastData.byDay.map((d) => ({
+      date: d.date,
+      tokens: d.tokens,
+      cost: d.cost,
+      cumulativeTokens: 0,
+      cumulativeCost: 0,
+    }));
+  }
+  return computeDeltas(loadHistory(extContext));
+}
+
 function pushViewUpdate(): void {
-  const store = loadHistory(extContext);
-  viewProvider.update(lastData, computeDeltas(store));
+  const deltas = currentDeltas();
+  viewProvider.update(lastData, deltas);
+  // Keep the detail panel in sync with every refresh, if it's open.
+  TokenUsageDetailPanel.updateIfOpen(lastData, deltas);
 }
 
 /**
@@ -204,6 +226,16 @@ export function activate(context: vscode.ExtensionContext) {
         clearConversationCache();
         await refreshData(true, { force: true });
         viewProvider.reveal();
+      }
+    ),
+    vscode.commands.registerCommand(
+      "windsurf-token-usage.openPanel",
+      async () => {
+        // Lazy-fetch on first open if we have nothing cached yet.
+        if (!lastData) {
+          await refreshData(true);
+        }
+        TokenUsageDetailPanel.show(lastData, currentDeltas());
       }
     ),
     vscode.commands.registerCommand(
