@@ -1,6 +1,7 @@
 import * as vscode from "vscode";
 import type { DashboardData } from "./types";
 import type { DailyDelta } from "./history";
+import type { QuotaInfo } from "./quota";
 
 export class TokenUsageViewProvider implements vscode.WebviewViewProvider {
   public static readonly viewType = "windsurf-token-usage.dashboard";
@@ -154,8 +155,90 @@ export function getSidebarHtml(data: DashboardData, _deltas: DailyDelta[] = []):
       </tr>
     </tbody>
   </table>
+
+  ${buildQuotaLine(data.quota ?? null, data.quotaError ?? null)}
 </body>
 </html>`;
+}
+
+/**
+ * Compact single-line rendering of the account quota in the sidebar only.
+ * Degrades gracefully: missing fields are skipped, a null snapshot falls
+ * back to "N/A" rather than blowing up the sidebar.
+ *
+ * When `quota` is null we surface `errorReason` in the tooltip so users can
+ * tell *why* the line is N/A (e.g. "no apiKey found", "HTTP 401") — handy
+ * when debugging without opening the Output channel.
+ */
+function buildQuotaLine(
+  quota: QuotaInfo | null,
+  errorReason: string | null
+): string {
+  if (!quota) {
+    const baseMsg = "Account quota unavailable.";
+    const reason = errorReason
+      ? `\nReason: ${errorReason}`
+      : "";
+    const hint = "\nOpen \"Windsurf Token Usage\" Output channel for details.";
+    return `<div class="quota-line" title="${escHtml(baseMsg + reason + hint)}"><span class="quota-label">Quota</span><span class="quota-na">N/A</span>${errorReason ? `<span class="quota-reason">${escHtml(errorReason)}</span>` : ""}</div>`;
+  }
+
+  const parts: string[] = [];
+  if (quota.promptUsed !== undefined || quota.promptLimit !== undefined) {
+    const used = quota.promptUsed ?? 0;
+    const limit = quota.promptLimit;
+    parts.push(
+      `<span class="quota-item" title="Prompt credits used / available">Prompt <b>${fmtK(used)}</b>${limit !== undefined ? ` / ${fmtK(limit)}` : ""}</span>`
+    );
+  }
+  if (quota.flowUsed !== undefined || quota.flowLimit !== undefined) {
+    const used = quota.flowUsed ?? 0;
+    const limit = quota.flowLimit;
+    parts.push(
+      `<span class="quota-item" title="Flow credits used / available">Flow <b>${fmtK(used)}</b>${limit !== undefined ? ` / ${fmtK(limit)}` : ""}</span>`
+    );
+  }
+  if (quota.resetDate) {
+    parts.push(
+      `<span class="quota-reset" title="Quota reset date">resets ${escHtml(fmtQuotaDate(quota.resetDate))}</span>`
+    );
+  }
+
+  if (parts.length === 0) {
+    return `<div class="quota-line"><span class="quota-label">Quota</span><span class="quota-na">N/A</span></div>`;
+  }
+
+  const tooltip = [
+    `Source: ${
+      quota.source === "local-sqlite"
+        ? "state.vscdb apiKey"
+        : "devClient reflection"
+    }`,
+    `Method: ${quota.method}`,
+    quota.plan ? `Plan: ${quota.plan}` : null,
+  ]
+    .filter(Boolean)
+    .join("\n");
+  return `<div class="quota-line" title="${escHtml(tooltip)}"><span class="quota-label">Quota</span>${parts.join('<span class="quota-sep">·</span>')}</div>`;
+}
+
+/**
+ * Render the quota reset date as compactly as possible. Accepts ISO 8601
+ * strings as well as bare YYYY-MM-DD; falls back to the raw string for
+ * anything the Date parser rejects.
+ */
+function fmtQuotaDate(s: string): string {
+  if (!s) {
+    return "";
+  }
+  const d = new Date(s);
+  if (Number.isNaN(d.getTime())) {
+    // Not a parseable date — probably already a short form like "05-01".
+    return s;
+  }
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${m}-${day}`;
 }
 
 /**
@@ -534,6 +617,51 @@ table.kpi td { color: var(--text); }
 table.kpi td.kpi-total { color: var(--danger); font-weight: 700; }
 table.kpi td.kpi-cost { color: var(--cost-color); font-weight: 700; }
 table.kpi .kpi-today th { color: var(--accent); }
+
+/* ── Quota line (sidebar only) ────────────────────────────────────────── */
+.quota-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 5px 8px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text);
+}
+.quota-line .quota-label {
+  color: var(--text-dim);
+  font-family: var(--font);
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+.quota-line .quota-item b {
+  color: var(--accent);
+  font-weight: 700;
+}
+.quota-line .quota-reset {
+  color: var(--text-dim);
+  font-size: 10px;
+}
+.quota-line .quota-sep {
+  color: var(--text-dim);
+  opacity: 0.6;
+}
+.quota-line .quota-na {
+  color: var(--text-dim);
+  font-style: italic;
+}
+.quota-line .quota-reason {
+  color: var(--danger);
+  font-size: 10px;
+  margin-left: 4px;
+  opacity: 0.85;
+}
 
 /* ── Panel toolbar buttons ────────────────────────────────────────────── */
 .toolbar {

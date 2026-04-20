@@ -12,6 +12,8 @@ import {
   clearHistory,
   computeDeltas,
 } from "./history";
+import { setExtensionContext as setWindsurfAuthContext } from "./windsurfAuth";
+import { showLogs, disposeLogger } from "./logger";
 import type { DashboardData } from "./types";
 
 let statusBarItem: vscode.StatusBarItem;
@@ -247,6 +249,10 @@ export function activate(context: vscode.ExtensionContext) {
     return;
   }
   extContext = context;
+  // Share the context with windsurfAuth so it can derive `state.vscdb`'s
+  // path from our own `globalStorageUri` (works with portable / custom
+  // --user-data-dir installs too).
+  setWindsurfAuthContext(context);
 
   // Sidebar view provider
   viewProvider = new TokenUsageViewProvider(context);
@@ -310,6 +316,12 @@ export function activate(context: vscode.ExtensionContext) {
       }
     ),
     vscode.commands.registerCommand(
+      "windsurf-token-usage.showLogs",
+      () => {
+        showLogs();
+      }
+    ),
+    vscode.commands.registerCommand(
       "windsurf-token-usage.clearHistory",
       async () => {
         const pick = await vscode.window.showWarningMessage(
@@ -362,4 +374,5 @@ export function deactivate() {
     clearTimeout(startupTimer);
     startupTimer = undefined;
   }
+  disposeLogger();
 }

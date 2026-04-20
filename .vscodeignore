@@ -3,3 +3,10 @@ src/**
 tsconfig.json
 **/*.map
 node_modules/**
+# Un-exclude only the runtime assets we actually ship from sql.js:
+# the non-debug WASM loader + its binary. The asm.js / browser / debug /
+# worker variants together add ~15 MB and none of them are loaded at runtime.
+!node_modules/sql.js/package.json
+!node_modules/sql.js/LICENSE
+!node_modules/sql.js/dist/sql-wasm.js
+!node_modules/sql.js/dist/sql-wasm.wasm

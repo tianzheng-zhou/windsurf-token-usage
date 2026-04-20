@@ -128,4 +128,16 @@ export interface DashboardData {
   byModel: ModelBreakdown[];
   /** Per-workspace global aggregate, sorted by cost descending. */
   byWorkspace: WorkspaceBreakdown[];
+  /**
+   * Best-effort snapshot of the signed-in account's Windsurf quota. Null when
+   * no probe path produced a usable response — the UI degrades to "N/A"
+   * rather than failing the whole refresh. Shape defined in `quota.ts`.
+   */
+  quota?: import("./quota").QuotaInfo | null;
+  /**
+   * Short human-readable reason `quota` is null (e.g. "HTTP 401",
+   * "no apiKey found"). Surfaced in the sidebar tooltip so users can
+   * diagnose without having to open the Output channel.
+   */
+  quotaError?: string | null;
 }

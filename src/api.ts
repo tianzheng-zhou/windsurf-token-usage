@@ -1,5 +1,6 @@
 import * as vscode from "vscode";
 import * as http from "http";
+import * as https from "https";
 import type {
   WindsurfCredentials,
   TrajectorySummary,
@@ -12,8 +13,47 @@ import type {
   WorkspaceBreakdown,
   FailedCascade,
 } from "./types";
+import { fetchQuota, clearQuotaMemo, type QuotaInfo } from "./quota";
+import { log } from "./logger";
 
 let cachedCreds: WindsurfCredentials | null = null;
+// Last devClient we successfully resolved. Stashed so quota probing can reuse
+// it without re-walking the codeium.windsurf extension API, and refreshed
+// whenever extractCsrf() runs.
+let lastDevClient: any = null;
+
+/**
+ * Return the most recently seen devClient, re-fetching from the
+ * `codeium.windsurf` extension if nothing is cached yet. Used by quota
+ * probing as a fallback when the local LS has no matching method. Returns
+ * null if the Windsurf extension is not active / not exporting devClient.
+ */
+export async function getDevClient(): Promise<any | null> {
+  if (lastDevClient) {
+    return lastDevClient;
+  }
+  const ext = vscode.extensions.getExtension("codeium.windsurf");
+  if (!ext?.isActive) {
+    return null;
+  }
+  const exports = ext.exports;
+  if (!exports || typeof exports.devClient !== "function") {
+    return null;
+  }
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const dc = exports.devClient();
+      if (dc) {
+        lastDevClient = dc;
+        return dc;
+      }
+    } catch {
+      /* fall through to retry */
+    }
+    await new Promise((r) => setTimeout(r, 500));
+  }
+  return null;
+}
 
 // ── Per-turn date bucketing helpers ─────────────────────────────────────────
 
@@ -238,6 +278,9 @@ async function extractCsrf(): Promise<WindsurfCredentials | null> {
   if (!devClient) {
     return null;
   }
+  // Cache the live devClient so quota probing can reuse it without walking
+  // the extension API again.
+  lastDevClient = devClient;
 
   // Strategy 1 — side-effect-free reflection over devClient internals.
   // The reflected result MUST be validated against the LS; a false positive
@@ -408,7 +451,7 @@ async function extractViaHttpPatch(devClient: any): Promise<WindsurfCredentials 
 
 // ── HTTP Helper ────────────────────────────────────────────────────────────
 
-function httpPost(
+export function httpPost(
   url: string,
   extraHeaders: Record<string, string>,
   body: string
@@ -416,6 +459,12 @@ function httpPost(
   return new Promise((resolve, reject) => {
     let settled = false;
     const u = new URL(url);
+    // Pick the transport by scheme so the same helper serves both the
+    // local loopback RPC (http://127.0.0.1:<port>/...) and the outbound
+    // seat-management calls (https://server.codeium.com/...).
+    const isHttps = u.protocol === "https:";
+    const transport = isHttps ? https : http;
+    const defaultPort = isHttps ? 443 : 80;
 
     const hardTimer = setTimeout(() => {
       if (!settled) {
@@ -423,20 +472,24 @@ function httpPost(
         req.destroy();
         reject(new Error("timeout (hard)"));
       }
-    }, 10000);
+    }, 15000);
 
-    const req = http.request(
+    const req = transport.request(
       {
         hostname: u.hostname,
-        port: u.port,
-        path: u.pathname,
+        port: u.port ? Number(u.port) : defaultPort,
+        path: u.pathname + (u.search || ""),
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "Connect-Protocol-Version": "1",
+          // NOTE: Connect-Protocol-Version is intentionally not default-set.
+          // Local LS callers add it via apiCall() below; cloud Seat-Management
+          // calls (cockpit-tools' post_seat_management_json equivalent) must
+          // NOT send it — the server's Connect-RPC JSON endpoint rejects
+          // some combinations of CPV + Content-Type we send otherwise.
           ...extraHeaders,
         },
-        timeout: 5000,
+        timeout: 10000,
       },
       (res) => {
         let data = "";
@@ -479,7 +532,11 @@ async function apiCall(
 ): Promise<any> {
   const resp = await httpPost(
     `http://127.0.0.1:${creds.port}/exa.language_server_pb.LanguageServerService/${method}`,
-    { "x-codeium-csrf-token": creds.csrf },
+    {
+      "x-codeium-csrf-token": creds.csrf,
+      // The local Language Server speaks Connect-RPC v1 over JSON.
+      "Connect-Protocol-Version": "1",
+    },
     JSON.stringify(body)
   );
   if (resp.status !== 200) {
@@ -506,6 +563,9 @@ const conversationCache: Map<string, CacheEntry> = new Map();
 
 export function clearConversationCache(): void {
   conversationCache.clear();
+  // Also forget which quota-probe method won last time; a Full Refresh should
+  // re-discover it in case the LS grew/removed a method since last run.
+  clearQuotaMemo();
 }
 
 type CascadeResult =
@@ -847,6 +907,22 @@ export async function fetchDashboardData(
     .map(([workspace, d]) => ({ workspace, tokens: d.tokens, cost: d.cost }))
     .sort((a, b) => b.cost - a.cost || b.tokens - a.tokens);
 
+  // Best-effort account-quota fetch. Failures never bubble up: the refresh
+  // always completes with the token stats — quota simply lands as null plus
+  // a human-readable reason the sidebar tooltip surfaces.
+  let quota: QuotaInfo | null = null;
+  let quotaError: string | null = null;
+  try {
+    const devClient = await getDevClient();
+    const outcome = await fetchQuota(creds, devClient);
+    quota = outcome.quota;
+    quotaError = outcome.error;
+  } catch (e: unknown) {
+    const msg = (e as Error)?.message ?? String(e);
+    log(`quota: unexpected fetchQuota throw: ${msg}`);
+    quotaError = `unexpected: ${msg}`;
+  }
+
   return {
     conversations,
     grandTotal,
@@ -858,5 +934,7 @@ export async function fetchDashboardData(
     byDay,
     byModel,
     byWorkspace,
+    quota,
+    quotaError,
   };
 }

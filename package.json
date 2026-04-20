@@ -2,13 +2,17 @@
   "name": "windsurf-token-usage",
   "displayName": "Windsurf Token Usage",
   "description": "Track and visualize Windsurf Cascade token consumption in real-time",
-  "version": "0.3.0",
+  "version": "0.3.2",
   "publisher": "tianzheng-zhou",
   "engines": {
     "vscode": "^1.85.0"
   },
-  "categories": ["Other"],
-  "activationEvents": ["onStartupFinished"],
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
   "main": "./out/extension.js",
   "contributes": {
     "viewsContainers": {
@@ -58,6 +62,12 @@
         "title": "Clear History",
         "category": "Windsurf Token Usage",
         "icon": "$(trash)"
+      },
+      {
+        "command": "windsurf-token-usage.showLogs",
+        "title": "Show Logs",
+        "category": "Windsurf Token Usage",
+        "icon": "$(output)"
       }
     ],
     "menus": {
@@ -102,7 +112,11 @@
   },
   "devDependencies": {
     "@types/node": "^20.0.0",
+    "@types/sql.js": "^1.4.11",
     "@types/vscode": "^1.85.0",
     "typescript": "^5.3.0"
+  },
+  "dependencies": {
+    "sql.js": "^1.14.1"
   }
 }
