@@ -34,7 +34,10 @@ const PRICING_TABLE: Array<{ match: (uid: string) => boolean; pricing: ModelPric
   { match: (u) => /frontier.?arena/i.test(u),       pricing: { input: 3.00, output: 15.00, cached: 0 } },
 
   // ── Anthropic ──
+  // Opus 4.6 Fast — Anthropic fast mode (6x standard pricing). As of Apr 2026,
+  // fast mode is only confirmed for 4.6; add 4.7 Fast here if/when it launches.
   { match: (u) => /opus.?4.?6.*fast/i.test(u),     pricing: { input: 30, output: 150, cached: 3.00 } },
+  // Opus 4.x standard (covers 4.5 / 4.6 / 4.7): $5 / $25 / $0.50 per 1M
   { match: (u) => /opus.?4/i.test(u),               pricing: { input: 5, output: 25, cached: 0.50 } },
   { match: (u) => /haiku/i.test(u),                 pricing: { input: 1, output: 5, cached: 0.10 } },
   { match: (u) => /sonnet.?4/i.test(u),             pricing: { input: 3, output: 15, cached: 0.30 } },
@@ -133,77 +136,158 @@ async function extractCsrf(): Promise<WindsurfCredentials | null> {
     return null;
   }
 
-  // Patch ClientRequest.prototype.end to capture CSRF header
-  let capturedCsrf = "";
-  let capturedPort = 0;
-  const origEnd = http.ClientRequest.prototype.end;
-  const origWrite = http.ClientRequest.prototype.write;
+  // Strategy 1 — side-effect-free reflection over devClient internals.
+  const reflected = tryExtractFromReflection(devClient);
+  if (reflected) {
+    return reflected;
+  }
 
-  try {
-    http.ClientRequest.prototype.end = function patchedEnd(
-      this: http.ClientRequest,
-      ...args: any[]
-    ) {
-      try {
-        const csrf = this.getHeader("x-codeium-csrf-token");
-        if (csrf && !capturedCsrf) {
-          capturedCsrf = String(csrf);
-          const hostHeader = this.getHeader("host");
-          if (hostHeader) {
-            const pm = String(hostHeader).match(/:(\d+)/);
-            if (pm) {
-              capturedPort = Number(pm[1]);
+  // Strategy 2 — scoped ClientRequest.prototype.end patch as fallback.
+  return await extractViaHttpPatch(devClient);
+}
+
+/**
+ * Walk devClient's object graph looking for an `x-codeium-csrf-token` header
+ * value and a local `127.0.0.1:PORT` URL. Bounded depth, visited-set guarded,
+ * and fully non-mutating — safe to call before any HTTP traffic.
+ */
+function tryExtractFromReflection(root: any): WindsurfCredentials | null {
+  const visited = new WeakSet<object>();
+  let foundCsrf = "";
+  let foundPort = 0;
+
+  const walk = (obj: any, depth: number): void => {
+    if (!obj || typeof obj !== "object" || visited.has(obj) || depth > 5) {
+      return;
+    }
+    visited.add(obj);
+
+    // Direct header containers commonly used by Connect / gRPC-web clients.
+    for (const hk of ["headers", "defaultHeaders", "_headers", "metadata"]) {
+      const h = (obj as any)[hk];
+      if (h && typeof h === "object") {
+        for (const k of Object.keys(h)) {
+          if (/^x-codeium-csrf-token$/i.test(k)) {
+            const v = (h as any)[k];
+            if (!foundCsrf && typeof v === "string" && v.length >= 16) {
+              foundCsrf = v;
             }
           }
-        }
-      } catch {
-        /* skip */
-      }
-      return origEnd.apply(this, args as any);
-    };
-
-    http.ClientRequest.prototype.write = function patchedWrite(
-      this: http.ClientRequest,
-      ...args: any[]
-    ) {
-      try {
-        const csrf = this.getHeader("x-codeium-csrf-token");
-        if (csrf && !capturedCsrf) {
-          capturedCsrf = String(csrf);
-          const hostHeader = this.getHeader("host");
-          if (hostHeader) {
-            const pm = String(hostHeader).match(/:(\d+)/);
-            if (pm) {
-              capturedPort = Number(pm[1]);
-            }
-          }
-        }
-      } catch {
-        /* skip */
-      }
-      return origWrite.apply(this, args as any);
-    };
-
-    // Trigger an HTTP request through the devClient
-    const methods = Object.keys(devClient);
-    for (const methodName of methods) {
-      if (typeof devClient[methodName] === "function") {
-        try {
-          await Promise.race([
-            devClient[methodName]({}),
-            new Promise((_, rej) => setTimeout(() => rej(new Error("devClient timeout")), 5000)),
-          ]);
-        } catch {
-          /* expected — we only need the intercepted headers */
-        }
-        if (capturedCsrf) {
-          break;
         }
       }
     }
+
+    let keys: string[];
+    try {
+      keys = Object.getOwnPropertyNames(obj);
+    } catch {
+      return;
+    }
+
+    for (const key of keys) {
+      let v: any;
+      try {
+        v = obj[key];
+      } catch {
+        continue;
+      }
+
+      if (typeof v === "string") {
+        if (!foundCsrf && /csrf/i.test(key) && v.length >= 16) {
+          foundCsrf = v;
+        }
+        if (!foundPort) {
+          const m = v.match(/127\.0\.0\.1:(\d+)|localhost:(\d+)/i);
+          if (m) {
+            foundPort = Number(m[1] || m[2]);
+          }
+        }
+      } else if (typeof v === "number" && !foundPort && /port/i.test(key)) {
+        if (Number.isInteger(v) && v > 1024 && v < 65536) {
+          foundPort = v;
+        }
+      } else if (v && typeof v === "object") {
+        walk(v, depth + 1);
+      }
+
+      if (foundCsrf && foundPort) {
+        return;
+      }
+    }
+  };
+
+  try {
+    walk(root, 0);
+  } catch {
+    return null;
+  }
+
+  if (foundCsrf && foundPort) {
+    return { csrf: foundCsrf, port: foundPort };
+  }
+  return null;
+}
+
+/**
+ * Minimum-blast-radius fallback: patch only ClientRequest.prototype.end, only
+ * while `active === true`, and only inspect headers on requests targeting the
+ * local loopback interface. Any other traffic from any other extension passes
+ * through untouched. All probe logic is wrapped so it cannot break the
+ * original request even if Windsurf changes header shape.
+ */
+async function extractViaHttpPatch(devClient: any): Promise<WindsurfCredentials | null> {
+  let capturedCsrf = "";
+  let capturedPort = 0;
+  let active = true;
+
+  const origEnd = http.ClientRequest.prototype.end;
+
+  function patchedEnd(this: http.ClientRequest, ...args: any[]) {
+    if (active && !capturedCsrf) {
+      try {
+        const host = this.getHeader("host");
+        if (host && /^(127\.0\.0\.1|localhost)(:\d+)?$/i.test(String(host))) {
+          const csrf = this.getHeader("x-codeium-csrf-token");
+          if (csrf) {
+            capturedCsrf = String(csrf);
+            const pm = String(host).match(/:(\d+)/);
+            if (pm) {
+              capturedPort = Number(pm[1]);
+            }
+          }
+        }
+      } catch {
+        /* instrumentation must never break the request */
+      }
+    }
+    return origEnd.apply(this, args as any);
+  }
+
+  try {
+    http.ClientRequest.prototype.end = patchedEnd as any;
+
+    const methods = Object.keys(devClient);
+    for (const methodName of methods) {
+      if (typeof devClient[methodName] !== "function") {
+        continue;
+      }
+      try {
+        await Promise.race([
+          devClient[methodName]({}),
+          new Promise((_, rej) =>
+            setTimeout(() => rej(new Error("devClient timeout")), 5000)
+          ),
+        ]);
+      } catch {
+        /* expected — we only need the intercepted header */
+      }
+      if (capturedCsrf) {
+        break;
+      }
+    }
   } finally {
+    active = false;
     http.ClientRequest.prototype.end = origEnd;
-    http.ClientRequest.prototype.write = origWrite;
   }
 
   if (capturedCsrf && capturedPort) {

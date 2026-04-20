@@ -2,7 +2,7 @@
   "name": "windsurf-token-usage",
   "displayName": "Windsurf Token Usage",
   "description": "Track and visualize Windsurf Cascade token consumption in real-time",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "publisher": "tianzheng-zhou",
   "engines": {
     "vscode": "^1.85.0"
@@ -39,8 +39,24 @@
         "command": "windsurf-token-usage.refresh",
         "title": "Refresh Token Data",
         "category": "Windsurf Token Usage"
+      },
+      {
+        "command": "windsurf-token-usage.clearHistory",
+        "title": "Clear History",
+        "category": "Windsurf Token Usage"
       }
-    ]
+    ],
+    "configuration": {
+      "title": "Windsurf Token Usage",
+      "properties": {
+        "windsurfTokenUsage.refreshIntervalSeconds": {
+          "type": "number",
+          "default": 300,
+          "minimum": 0,
+          "description": "Auto-refresh interval in seconds. Set to 0 to disable auto-refresh. Values between 1 and 29 are clamped to 30 to avoid hammering the language server."
+        }
+      }
+    }
   },
   "scripts": {
     "compile": "tsc -p .",

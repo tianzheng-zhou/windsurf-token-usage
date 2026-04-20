@@ -1,11 +1,13 @@
 import * as vscode from "vscode";
 import type { DashboardData } from "./types";
+import type { DailyDelta } from "./history";
 
 export class TokenUsageViewProvider implements vscode.WebviewViewProvider {
   public static readonly viewType = "windsurf-token-usage.dashboard";
 
   private _view?: vscode.WebviewView;
-  private _data?: DashboardData;
+  private _data: DashboardData | null = null;
+  private _deltas: DailyDelta[] = [];
 
   constructor(private readonly _extensionContext: vscode.ExtensionContext) {}
 
@@ -16,18 +18,15 @@ export class TokenUsageViewProvider implements vscode.WebviewViewProvider {
   ): void {
     this._view = webviewView;
     webviewView.webview.options = { enableScripts: false };
-    if (this._data) {
-      webviewView.webview.html = getHtml(this._data);
-    } else {
-      webviewView.webview.html = getLoadingHtml();
-    }
+    this._render();
   }
 
-  public update(data: DashboardData): void {
-    this._data = data;
-    if (this._view) {
-      this._view.webview.html = getHtml(data);
+  public update(data: DashboardData | null, deltas: DailyDelta[] = []): void {
+    if (data) {
+      this._data = data;
     }
+    this._deltas = deltas;
+    this._render();
   }
 
   public reveal(): void {
@@ -35,13 +34,26 @@ export class TokenUsageViewProvider implements vscode.WebviewViewProvider {
       this._view.show?.(true);
     }
   }
+
+  private _render(): void {
+    if (!this._view) {
+      return;
+    }
+    this._view.webview.html = this._data
+      ? getHtml(this._data, this._deltas)
+      : getLoadingHtml(this._deltas);
+  }
 }
 
-function getLoadingHtml(): string {
+function getLoadingHtml(deltas: DailyDelta[] = []): string {
+  const trend = buildTrendSection(deltas);
+  const body = trend
+    ? `<h1>⚡ Token Usage</h1><div class="subtitle">Fetching current data…</div>${trend}`
+    : `<div class="center"><p>Loading token data…</p></div>`;
   return `<!DOCTYPE html>
 <html lang="en"><head><meta charset="UTF-8"/>
-<style>body{font-family:var(--vscode-font-family,sans-serif);color:var(--vscode-foreground);background:var(--vscode-sideBar-background,transparent);display:flex;align-items:center;justify-content:center;height:100vh;}p{color:var(--vscode-descriptionForeground);}</style>
-</head><body><p>Loading token data…</p></body></html>`;
+<style>${baseStyles()}</style>
+</head><body>${body}</body></html>`;
 }
 
 function fmt(n: number): string {
@@ -78,7 +90,7 @@ function fmtTime(iso: string): string {
   });
 }
 
-function getHtml(data: DashboardData): string {
+function getHtml(data: DashboardData, deltas: DailyDelta[] = []): string {
   const { conversations, grandTotal, estimatedCost, fetchedAt } = data;
 
   const convItems = conversations
@@ -114,13 +126,56 @@ function getHtml(data: DashboardData): string {
     })
     .join("\n");
 
+  const trend = buildTrendSection(deltas);
+
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
 <title>Windsurf Token Usage</title>
-<style>
+<style>${baseStyles()}</style>
+</head>
+<body>
+  <h1>⚡ Token Usage</h1>
+  <div class="subtitle">
+    ${conversations.length} conversations · ${fmtTime(fetchedAt)}
+  </div>
+
+  <div class="cards">
+    <div class="card input">
+      <div class="label">Input</div>
+      <div class="value">${fmtK(grandTotal.inputTokens)}</div>
+    </div>
+    <div class="card output">
+      <div class="label">Output</div>
+      <div class="value">${fmtK(grandTotal.outputTokens)}</div>
+    </div>
+    <div class="card cached">
+      <div class="label">Cached</div>
+      <div class="value">${fmtK(grandTotal.cachedTokens)}</div>
+    </div>
+    <div class="card total">
+      <div class="label">Total</div>
+      <div class="value">${fmtK(grandTotal.total)}</div>
+    </div>
+    <div class="card cost wide">
+      <div class="label">Est. API Cost</div>
+      <div class="value">${fmtCost(estimatedCost.totalCost)}</div>
+      <div class="sub">In: ${fmtCost(estimatedCost.inputCost)} · Out: ${fmtCost(estimatedCost.outputCost)} · Cache: ${fmtCost(estimatedCost.cachedCost)}</div>
+  </div>
+  </div>
+
+  ${trend}
+
+  <div class="section-title">Conversations</div>
+  ${convItems}
+</body>
+</html>`;
+}
+
+function baseStyles(): string {
+  return `
 :root {
   --bg: var(--vscode-sideBar-background, var(--vscode-editor-background));
   --surface: var(--vscode-editorWidget-background, var(--vscode-editor-background));
@@ -143,6 +198,10 @@ body {
   padding: 12px;
   line-height: 1.5;
 }
+.center {
+  display:flex; align-items:center; justify-content:center; min-height: 50vh;
+}
+.center p { color: var(--text-dim); }
 h1 {
   font-size: 16px;
   font-weight: 600;
@@ -196,6 +255,57 @@ h1 {
   margin-bottom: 8px;
   padding-bottom: 4px;
   border-bottom: 1px solid var(--border);
+}
+
+.trend-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin-bottom: 8px;
+}
+.trend-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-bottom: 6px;
+}
+.trend-title {
+  font-size: 11px;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+.trend-last {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text);
+}
+.trend-svg {
+  width: 100%;
+  height: 48px;
+  display: block;
+}
+.trend-svg .bar { fill: var(--accent); opacity: 0.25; }
+.trend-svg .bar.cost { fill: var(--cost-color); opacity: 0.25; }
+.trend-svg .line {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 1.5;
+}
+.trend-svg .line.cost { stroke: var(--cost-color); }
+.trend-range {
+  font-size: 9px;
+  color: var(--text-dim);
+  display: flex;
+  justify-content: space-between;
+  margin-top: 2px;
+}
+.trend-empty {
+  font-size: 11px;
+  color: var(--text-dim);
+  text-align: center;
+  padding: 8px 0;
 }
 
 .conv-item {
@@ -265,42 +375,88 @@ h1 {
   font-size: 9px;
   color: var(--text-dim);
 }
-</style>
-</head>
-<body>
-  <h1>⚡ Token Usage</h1>
-  <div class="subtitle">
-    ${conversations.length} conversations · ${fmtTime(fetchedAt)}
-  </div>
+`;
+}
 
-  <div class="cards">
-    <div class="card input">
-      <div class="label">Input</div>
-      <div class="value">${fmtK(grandTotal.inputTokens)}</div>
-    </div>
-    <div class="card output">
-      <div class="label">Output</div>
-      <div class="value">${fmtK(grandTotal.outputTokens)}</div>
-    </div>
-    <div class="card cached">
-      <div class="label">Cached</div>
-      <div class="value">${fmtK(grandTotal.cachedTokens)}</div>
-    </div>
-    <div class="card total">
-      <div class="label">Total</div>
-      <div class="value">${fmtK(grandTotal.total)}</div>
-    </div>
-    <div class="card cost wide">
-      <div class="label">Est. API Cost</div>
-      <div class="value">${fmtCost(estimatedCost.totalCost)}</div>
-      <div class="sub">In: ${fmtCost(estimatedCost.inputCost)} · Out: ${fmtCost(estimatedCost.outputCost)} · Cache: ${fmtCost(estimatedCost.cachedCost)}</div>
-    </div>
-  </div>
+function buildTrendSection(deltas: DailyDelta[]): string {
+  if (!deltas || deltas.length === 0) {
+    return "";
+  }
 
-  <div class="section-title">Conversations</div>
-  ${convItems}
-</body>
-</html>`;
+  const tokenChart = buildSparkline(deltas, "tokens");
+  const costChart = buildSparkline(deltas, "cost");
+  return `
+  <div class="section-title">Trend (last ${Math.min(30, deltas.length)} days)</div>
+  <div class="trend-card">${tokenChart}</div>
+  <div class="trend-card">${costChart}</div>
+  `;
+}
+
+function buildSparkline(
+  deltas: DailyDelta[],
+  metric: "tokens" | "cost"
+): string {
+  const recent = deltas.slice(-30);
+  const values = recent.map((d) => (metric === "tokens" ? d.tokens : d.cost));
+  const labelLast =
+    metric === "tokens"
+      ? `Today: ${fmtK(values[values.length - 1] ?? 0)}`
+      : `Today: ${fmtCost(values[values.length - 1] ?? 0)}`;
+  const title = metric === "tokens" ? "Tokens / day" : "Cost / day";
+
+  const nonZero = values.some((v) => v > 0);
+  if (recent.length < 2 || !nonZero) {
+    return `
+      <div class="trend-head">
+        <span class="trend-title">${title}</span>
+        <span class="trend-last">${labelLast}</span>
+      </div>
+      <div class="trend-empty">Collecting history… come back after another refresh.</div>
+    `;
+  }
+
+  const w = 240;
+  const h = 48;
+  const pad = 3;
+  const max = Math.max(1e-9, ...values);
+  const stepX =
+    recent.length > 1 ? (w - pad * 2) / (recent.length - 1) : (w - pad * 2);
+
+  const points = recent
+    .map((_d, i) => {
+      const x = pad + i * stepX;
+      const y = h - pad - (values[i] / max) * (h - pad * 2);
+      return `${x.toFixed(1)},${y.toFixed(1)}`;
+    })
+    .join(" ");
+
+  const bars = recent
+    .map((_d, i) => {
+      const x = pad + i * stepX - 1;
+      const barH = Math.max(0.5, (values[i] / max) * (h - pad * 2));
+      const y = h - pad - barH;
+      const cls = metric === "cost" ? "bar cost" : "bar";
+      return `<rect x="${x.toFixed(1)}" y="${y.toFixed(
+        1
+      )}" width="2" height="${barH.toFixed(1)}" class="${cls}"/>`;
+    })
+    .join("");
+
+  const lineCls = metric === "cost" ? "line cost" : "line";
+
+  return `
+    <div class="trend-head">
+      <span class="trend-title">${title}</span>
+      <span class="trend-last">${labelLast}</span>
+    </div>
+    <svg class="trend-svg" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" aria-hidden="true">
+      ${bars}
+      <polyline points="${points}" class="${lineCls}"/>
+    </svg>
+    <div class="trend-range"><span>${escHtml(recent[0].date)}</span><span>${escHtml(
+    recent[recent.length - 1].date
+  )}</span></div>
+  `;
 }
 
 function escHtml(s: string): string {
