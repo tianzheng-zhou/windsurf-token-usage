@@ -91,7 +91,7 @@ function fmtTime(iso: string): string {
 }
 
 function getHtml(data: DashboardData, deltas: DailyDelta[] = []): string {
-  const { conversations, grandTotal, estimatedCost, fetchedAt } = data;
+  const { conversations, grandTotal, estimatedCost, fetchedAt, failedConversations, fullRefresh } = data;
 
   const convItems = conversations
     .map((c, i) => {
@@ -139,7 +139,7 @@ function getHtml(data: DashboardData, deltas: DailyDelta[] = []): string {
 <body>
   <h1>⚡ Token Usage</h1>
   <div class="subtitle">
-    ${conversations.length} conversations · ${fmtTime(fetchedAt)}
+    ${conversations.length} conversations${failedConversations > 0 ? ` · <span class="failed">${failedConversations} failed</span>` : ""} · ${fmtTime(fetchedAt)}${fullRefresh ? ` · <span class="badge-full">full</span>` : ""}
   </div>
 
   <div class="cards">
@@ -212,6 +212,21 @@ h1 {
   color: var(--text-dim);
   font-size: 11px;
   margin-bottom: 12px;
+}
+.subtitle .failed {
+  color: var(--danger);
+  font-weight: 600;
+}
+.subtitle .badge-full {
+  display: inline-block;
+  padding: 0 5px;
+  border-radius: 3px;
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  font-size: 9px;
+  letter-spacing: 0.3px;
+  text-transform: uppercase;
+  vertical-align: 1px;
 }
 .cards {
   display: grid;

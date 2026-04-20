@@ -1,5 +1,9 @@
 import * as vscode from "vscode";
-import { fetchDashboardData, clearCredentials } from "./api";
+import {
+  fetchDashboardData,
+  clearCredentials,
+  clearConversationCache,
+} from "./api";
 import { TokenUsageViewProvider } from "./webview";
 import {
   loadHistory,
@@ -15,6 +19,7 @@ let viewProvider: TokenUsageViewProvider;
 let refreshTimer: NodeJS.Timeout | undefined;
 let startupTimer: NodeJS.Timeout | undefined;
 let extContext: vscode.ExtensionContext;
+let inflightRefresh: Promise<void> | null = null;
 
 const MIN_REFRESH_SECONDS = 30;
 const DEFAULT_REFRESH_SECONDS = 300;
@@ -43,47 +48,90 @@ function pushViewUpdate(): void {
   viewProvider.update(lastData, computeDeltas(store));
 }
 
-async function refreshData(showProgress = false): Promise<void> {
-  const doRefresh = async () => {
-    try {
-      statusBarItem.text = "$(loading~spin) Fetching tokens...";
-      lastData = await fetchDashboardData();
-      const t = lastData.grandTotal;
-      statusBarItem.text = `$(dashboard) ${fmtK(t.total)} tokens`;
-      const cost = lastData.estimatedCost.totalCost;
-      const costStr = cost < 0.005 ? "<$0.01" : "$" + cost.toFixed(2);
-      statusBarItem.tooltip = `Windsurf Token Usage\nInput: ${fmtK(t.inputTokens)} · Output: ${fmtK(t.outputTokens)} · Cached: ${fmtK(t.cachedTokens)}\nEst. API Cost: ${costStr}\n${lastData.conversations.length} conversations\nClick to open dashboard`;
+/**
+ * Core fetch + persist + push-to-view pipeline. Throws on failure so the outer
+ * wrapper can decide whether to surface an error notification.
+ */
+async function doCoreRefresh(opts: { force?: boolean }): Promise<void> {
+  statusBarItem.text = "$(loading~spin) Fetching tokens...";
+  try {
+    lastData = await fetchDashboardData({ force: opts.force });
+  } catch (e: any) {
+    statusBarItem.text = "$(warning) Tokens: N/A";
+    statusBarItem.tooltip = `Windsurf Token Usage\nError: ${e.message}`;
+    throw e;
+  }
 
-      // Persist today's cumulative snapshot; derive per-day deltas for the view.
-      try {
-        await recordSnapshot(extContext, lastData);
-      } catch {
-        /* persistence must never fail the refresh */
-      }
+  const t = lastData.grandTotal;
+  statusBarItem.text = `$(dashboard) ${fmtK(t.total)} tokens`;
+  const cost = lastData.estimatedCost.totalCost;
+  const costStr = cost < 0.005 ? "<$0.01" : "$" + cost.toFixed(2);
+  const failedLine =
+    lastData.failedConversations > 0
+      ? `\n⚠ ${lastData.failedConversations} conversation(s) failed to load`
+      : "";
+  statusBarItem.tooltip = `Windsurf Token Usage\nInput: ${fmtK(t.inputTokens)} · Output: ${fmtK(t.outputTokens)} · Cached: ${fmtK(t.cachedTokens)}\nEst. API Cost: ${costStr}\n${lastData.conversations.length} conversations${failedLine}\nClick to open dashboard`;
 
-      pushViewUpdate();
-    } catch (e: any) {
-      statusBarItem.text = "$(warning) Tokens: N/A";
-      statusBarItem.tooltip = `Windsurf Token Usage\nError: ${e.message}`;
-      if (showProgress) {
-        vscode.window.showErrorMessage(
-          `Windsurf Token Usage: ${e.message}`
-        );
-      }
+  // Persist today's cumulative snapshot; derive per-day deltas for the view.
+  try {
+    await recordSnapshot(extContext, lastData);
+  } catch {
+    /* persistence must never fail the refresh */
+  }
+
+  pushViewUpdate();
+}
+
+/**
+ * Refresh entry point. Reuses any in-flight refresh to avoid duplicate fetches
+ * triggered by auto-refresh + manual click racing. `opts.force` bypasses the
+ * per-cascade cache.
+ *
+ * NOTE: if an incremental refresh is already running and the caller requests
+ * force=true, it will still join the incremental refresh for this cycle. This
+ * is an intentional trade-off for simplicity: spam-clicking Full twice works.
+ */
+async function refreshData(
+  showProgress = false,
+  opts: { force?: boolean } = {}
+): Promise<void> {
+  const runOrJoin = (): Promise<void> => {
+    if (inflightRefresh) {
+      return inflightRefresh;
     }
+    const p = doCoreRefresh(opts);
+    inflightRefresh = p;
+    p.finally(() => {
+      if (inflightRefresh === p) {
+        inflightRefresh = null;
+      }
+    }).catch(() => {
+      /* awaiters handle rejection via the returned promise */
+    });
+    return p;
   };
 
-  if (showProgress) {
-    await vscode.window.withProgress(
-      {
-        location: vscode.ProgressLocation.Notification,
-        title: "Fetching Windsurf token data...",
-        cancellable: false,
-      },
-      doRefresh
-    );
-  } else {
-    await doRefresh();
+  try {
+    if (showProgress) {
+      await vscode.window.withProgress(
+        {
+          location: vscode.ProgressLocation.Notification,
+          title: opts.force
+            ? "Refreshing Windsurf token data (full)..."
+            : "Refreshing Windsurf token data...",
+          cancellable: false,
+        },
+        () => runOrJoin()
+      );
+    } else {
+      await runOrJoin();
+    }
+  } catch (e: any) {
+    if (showProgress) {
+      vscode.window.showErrorMessage(
+        `Windsurf Token Usage: ${e.message}`
+      );
+    }
   }
 }
 
@@ -143,8 +191,18 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand(
       "windsurf-token-usage.refresh",
       async () => {
+        // Incremental: reuse per-cascade cache + existing credentials.
+        await refreshData(true, { force: false });
+        viewProvider.reveal();
+      }
+    ),
+    vscode.commands.registerCommand(
+      "windsurf-token-usage.refreshFull",
+      async () => {
+        // Full: re-extract CSRF and re-fetch every trajectory's steps.
         clearCredentials();
-        await refreshData(true);
+        clearConversationCache();
+        await refreshData(true, { force: true });
         viewProvider.reveal();
       }
     ),

@@ -2,7 +2,7 @@
   "name": "windsurf-token-usage",
   "displayName": "Windsurf Token Usage",
   "description": "Track and visualize Windsurf Cascade token consumption in real-time",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "publisher": "tianzheng-zhou",
   "engines": {
     "vscode": "^1.85.0"
@@ -38,6 +38,11 @@
       {
         "command": "windsurf-token-usage.refresh",
         "title": "Refresh Token Data",
+        "category": "Windsurf Token Usage"
+      },
+      {
+        "command": "windsurf-token-usage.refreshFull",
+        "title": "Refresh Token Data (Full)",
         "category": "Windsurf Token Usage"
       },
       {

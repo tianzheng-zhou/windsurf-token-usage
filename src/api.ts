@@ -86,20 +86,23 @@ function getModelPricing(modelUid: string): ModelPricing | null {
 
 // ── CSRF Token Extraction ──────────────────────────────────────────────────
 
+async function validateCredentials(creds: WindsurfCredentials): Promise<boolean> {
+  try {
+    const resp = await httpPost(
+      `http://127.0.0.1:${creds.port}/exa.language_server_pb.LanguageServerService/GetProcesses`,
+      { "x-codeium-csrf-token": creds.csrf },
+      "{}"
+    );
+    return resp.status === 200;
+  } catch {
+    return false;
+  }
+}
+
 export async function getCredentials(): Promise<WindsurfCredentials | null> {
   if (cachedCreds) {
-    // Validate cached creds still work
-    try {
-      const resp = await httpPost(
-        `http://127.0.0.1:${cachedCreds.port}/exa.language_server_pb.LanguageServerService/GetProcesses`,
-        { "x-codeium-csrf-token": cachedCreds.csrf },
-        "{}"
-      );
-      if (resp.status === 200) {
-        return cachedCreds;
-      }
-    } catch {
-      /* fall through to re-extract */
+    if (await validateCredentials(cachedCreds)) {
+      return cachedCreds;
     }
     cachedCreds = null;
   }
@@ -137,13 +140,20 @@ async function extractCsrf(): Promise<WindsurfCredentials | null> {
   }
 
   // Strategy 1 — side-effect-free reflection over devClient internals.
+  // The reflected result MUST be validated against the LS; a false positive
+  // (e.g. a stale "csrfDefault" constant + unrelated port) would otherwise
+  // poison the cache and every subsequent API call.
   const reflected = tryExtractFromReflection(devClient);
-  if (reflected) {
+  if (reflected && (await validateCredentials(reflected))) {
     return reflected;
   }
 
   // Strategy 2 — scoped ClientRequest.prototype.end patch as fallback.
-  return await extractViaHttpPatch(devClient);
+  const patched = await extractViaHttpPatch(devClient);
+  if (patched && (await validateCredentials(patched))) {
+    return patched;
+  }
+  return null;
 }
 
 /**
@@ -378,7 +388,40 @@ async function apiCall(
   return JSON.parse(resp.body);
 }
 
-export async function fetchDashboardData(): Promise<DashboardData> {
+// ── Per-cascade incremental cache ──────────────────────────────────────────
+//
+// The server's `lastModifiedTime` on each trajectory summary is our cache key.
+// When it matches a previously computed ConversationStats, we can skip the
+// expensive GetCascadeTrajectorySteps call and reuse the cached result.
+//
+// `clearConversationCache()` is exposed so a "Full Refresh" command can opt
+// out of incremental caching without forcing a restart.
+
+interface CacheEntry {
+  lastModifiedTime: string;
+  stats: ConversationStats;
+}
+
+const conversationCache: Map<string, CacheEntry> = new Map();
+
+export function clearConversationCache(): void {
+  conversationCache.clear();
+}
+
+type CascadeResult =
+  | { ok: true; stats: ConversationStats; fromCache: boolean }
+  | { ok: false; cascadeId: string; error: string };
+
+export interface FetchOptions {
+  /** When true, bypass the per-cascade cache and re-fetch every trajectory. */
+  force?: boolean;
+}
+
+export async function fetchDashboardData(
+  options: FetchOptions = {}
+): Promise<DashboardData> {
+  const force = options.force === true;
+
   const creds = await getCredentials();
   if (!creds) {
     throw new Error(
@@ -386,7 +429,8 @@ export async function fetchDashboardData(): Promise<DashboardData> {
     );
   }
 
-  // Fetch all trajectory summaries
+  // Fetch all trajectory summaries (always cheap; this is the source of truth
+  // for lastModifiedTime that the cache keys off of).
   const trajResp = await apiCall(creds, "GetAllCascadeTrajectories", {
     include_user_inputs: false,
   });
@@ -403,20 +447,34 @@ export async function fetchDashboardData(): Promise<DashboardData> {
     cachedTokens: 0,
     total: 0,
   };
+  let failed = 0;
 
   // Fetch steps for each trajectory (parallel, max 5 concurrent)
   const CONCURRENCY = 5;
   const entries = cascadeIds.map((id) => ({ cascadeId: id, summary: summariesMap[id] }));
 
-  async function processCascade(c: WindsurfCredentials, entry: { cascadeId: string; summary: TrajectorySummary }) {
+  async function processCascade(
+    c: WindsurfCredentials,
+    entry: { cascadeId: string; summary: TrajectorySummary }
+  ): Promise<CascadeResult> {
     const { cascadeId, summary } = entry;
+    const lastMod = summary.lastModifiedTime ?? "";
+
+    // Incremental path: reuse cached stats if the trajectory hasn't changed.
+    if (!force && lastMod) {
+      const cached = conversationCache.get(cascadeId);
+      if (cached && cached.lastModifiedTime === lastMod) {
+        return { ok: true, stats: cached.stats, fromCache: true };
+      }
+    }
+
     let stepsData: any;
     try {
       stepsData = await apiCall(c, "GetCascadeTrajectorySteps", {
         cascade_id: cascadeId,
       });
-    } catch {
-      return null;
+    } catch (err: any) {
+      return { ok: false, cascadeId, error: String(err?.message ?? err) };
     }
 
     const steps: any[] = stepsData.steps ?? [];
@@ -485,27 +543,35 @@ export async function fetchDashboardData(): Promise<DashboardData> {
     }
     estCost.totalCost = estCost.inputCost + estCost.outputCost + estCost.cachedCost;
 
-    return {
+    const stats: ConversationStats = {
       cascadeId,
       summary: summary.summary ?? "(untitled)",
       turns,
       stepCount: summary.stepCount ?? steps.length,
       models: Object.keys(perModelUsage),
       createdTime: summary.createdTime ?? "",
-      lastModifiedTime: summary.lastModifiedTime ?? "",
+      lastModifiedTime: lastMod,
       usage,
       estimatedCost: estCost,
-    } as ConversationStats;
+    };
+
+    if (lastMod) {
+      conversationCache.set(cascadeId, { lastModifiedTime: lastMod, stats });
+    }
+
+    return { ok: true, stats, fromCache: false };
   }
 
   // Run with concurrency limit
   for (let i = 0; i < entries.length; i += CONCURRENCY) {
     const batch = entries.slice(i, i + CONCURRENCY);
     const results = await Promise.all(batch.map((e) => processCascade(creds, e)));
-    for (const conv of results) {
-      if (!conv) {
+    for (const r of results) {
+      if (!r.ok) {
+        failed++;
         continue;
       }
+      const conv = r.stats;
       grandTotal.inputTokens += conv.usage.inputTokens;
       grandTotal.outputTokens += conv.usage.outputTokens;
       grandTotal.cachedTokens += conv.usage.cachedTokens;
@@ -524,10 +590,24 @@ export async function fetchDashboardData(): Promise<DashboardData> {
   // Sort by total tokens descending
   conversations.sort((a, b) => b.usage.total - a.usage.total);
 
+  // Evict cache entries for trajectories that no longer exist server-side
+  // (e.g. the user deleted a conversation). Keeps memory bounded and the
+  // dashboard consistent with reality.
+  if (cascadeIds.length > 0) {
+    const live = new Set(cascadeIds);
+    for (const key of conversationCache.keys()) {
+      if (!live.has(key)) {
+        conversationCache.delete(key);
+      }
+    }
+  }
+
   return {
     conversations,
     grandTotal,
     estimatedCost: grandCost,
     fetchedAt: new Date().toISOString(),
+    failedConversations: failed,
+    fullRefresh: force,
   };
 }

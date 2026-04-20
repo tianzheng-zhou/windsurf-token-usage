@@ -51,4 +51,8 @@ export interface DashboardData {
   grandTotal: TokenUsage;
   estimatedCost: CostEstimate;
   fetchedAt: string;
+  /** Count of cascades whose steps failed to load this refresh. */
+  failedConversations: number;
+  /** Whether this refresh bypassed the per-cascade cache. */
+  fullRefresh: boolean;
 }
