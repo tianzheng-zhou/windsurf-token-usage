@@ -8,6 +8,9 @@ import type {
   ConversationStats,
   DashboardData,
   DailyBreakdown,
+  ModelBreakdown,
+  WorkspaceBreakdown,
+  FailedCascade,
 } from "./types";
 
 let cachedCreds: WindsurfCredentials | null = null;
@@ -128,6 +131,57 @@ function getModelPricing(modelUid: string): ModelPricing | null {
     }
   }
   return null;
+}
+
+// ── Workspace name extraction ───────────────────────────────────────────────
+
+const NO_WORKSPACE = "(no workspace)";
+
+/** Last non-empty segment of a file-like URI, or null. */
+function lastUriSegment(uri: string): string | null {
+  if (!uri) {
+    return null;
+  }
+  // Strip query/hash, normalize separators, trim trailing slashes, pop.
+  const cleaned = uri.split(/[?#]/, 1)[0].replace(/\\/g, "/").replace(/\/+$/, "");
+  const idx = cleaned.lastIndexOf("/");
+  const seg = idx >= 0 ? cleaned.slice(idx + 1) : cleaned;
+  return seg || null;
+}
+
+/**
+ * Reduce a trajectory's `workspaces` array into a stable primary label and
+ * a deduped list. Preference order: `repository.computedName` → last folder
+ * URI segment → "(no workspace)".
+ */
+function extractWorkspaces(summary: TrajectorySummary): {
+  primary: string;
+  all: string[];
+} {
+  const names: string[] = [];
+  const seen = new Set<string>();
+  const add = (n: string | null | undefined): void => {
+    if (!n) {
+      return;
+    }
+    if (!seen.has(n)) {
+      seen.add(n);
+      names.push(n);
+    }
+  };
+
+  for (const w of summary.workspaces ?? []) {
+    const repoName = w?.repository?.computedName?.trim();
+    if (repoName) {
+      add(repoName);
+      continue;
+    }
+    const seg = lastUriSegment(w?.workspaceFolderAbsoluteUri ?? "");
+    add(seg);
+  }
+
+  const primary = names[0] ?? NO_WORKSPACE;
+  return { primary, all: names.length > 0 ? names : [NO_WORKSPACE] };
 }
 
 // ── CSRF Token Extraction ──────────────────────────────────────────────────
@@ -458,6 +512,18 @@ type CascadeResult =
   | { ok: true; stats: ConversationStats; fromCache: boolean }
   | { ok: false; cascadeId: string; error: string };
 
+/**
+ * A cached ConversationStats is only reusable if it carries the 0.3-era
+ * fields the detail panel relies on. Older entries get re-fetched instead
+ * of silently producing empty byModel / byWorkspace rows.
+ */
+function isFreshCacheEntry(stats: ConversationStats): boolean {
+  return (
+    typeof stats.workspaceName === "string" &&
+    !!stats.perModel
+  );
+}
+
 export interface FetchOptions {
   /** When true, bypass the per-cascade cache and re-fetch every trajectory. */
   force?: boolean;
@@ -506,10 +572,15 @@ export async function fetchDashboardData(
     const { cascadeId, summary } = entry;
     const lastMod = summary.lastModifiedTime ?? "";
 
-    // Incremental path: reuse cached stats if the trajectory hasn't changed.
+    // Incremental path: reuse cached stats if the trajectory hasn't changed
+    // AND the cache entry carries the 0.3-era fields the panel needs.
     if (!force && lastMod) {
       const cached = conversationCache.get(cascadeId);
-      if (cached && cached.lastModifiedTime === lastMod) {
+      if (
+        cached &&
+        cached.lastModifiedTime === lastMod &&
+        isFreshCacheEntry(cached.stats)
+      ) {
         return { ok: true, stats: cached.stats, fromCache: true };
       }
     }
@@ -531,7 +602,13 @@ export async function fetchDashboardData(
       total: 0,
     };
     let turns = 0;
-    const perModelUsage: Record<string, { input: number; output: number; cached: number }> = {};
+    // Per-model usage + per-model cost. We accumulate cost per turn so the
+    // panel can surface "which model cost the most" without re-running the
+    // pricing table on cached data.
+    const perModelUsage: Record<
+      string,
+      { input: number; output: number; cached: number; cost: number }
+    > = {};
 
     // Per-day bucket for THIS cascade. Each turn's per-class tokens + cost
     // are stamped against the turn's own local-date so "Today" in the UI
@@ -576,7 +653,7 @@ export async function fetchDashboardData(
         }
 
         if (!perModelUsage[modelUid]) {
-          perModelUsage[modelUid] = { input: 0, output: 0, cached: 0 };
+          perModelUsage[modelUid] = { input: 0, output: 0, cached: 0, cost: 0 };
         }
         perModelUsage[modelUid].input += turnInput;
         perModelUsage[modelUid].output += turnOutput;
@@ -591,6 +668,7 @@ export async function fetchDashboardData(
             (turnOutput / 1_000_000) * p.output +
             (turnCached / 1_000_000) * p.cached
           : 0;
+        perModelUsage[modelUid].cost += turnCost;
         if (!byDay[dateKey]) {
           byDay[dateKey] = { input: 0, output: 0, cached: 0, cost: 0 };
         }
@@ -603,7 +681,9 @@ export async function fetchDashboardData(
 
     usage.total = usage.inputTokens + usage.outputTokens + usage.cachedTokens;
 
-    // Estimated cost for this conversation
+    // Estimated cost for this conversation — summed from the per-turn costs
+    // we just tallied per model. Category split (input/output/cached) is
+    // recomputed here so the sidebar "Est. API Cost" card keeps its breakdown.
     const estCost: CostEstimate = { inputCost: 0, outputCost: 0, cachedCost: 0, totalCost: 0 };
     for (const [uid, mu] of Object.entries(perModelUsage)) {
       const p = getModelPricing(uid);
@@ -616,6 +696,8 @@ export async function fetchDashboardData(
     }
     estCost.totalCost = estCost.inputCost + estCost.outputCost + estCost.cachedCost;
 
+    const { primary: workspaceName, all: workspaces } = extractWorkspaces(summary);
+
     const stats: ConversationStats = {
       cascadeId,
       summary: summary.summary ?? "(untitled)",
@@ -627,6 +709,9 @@ export async function fetchDashboardData(
       usage,
       estimatedCost: estCost,
       byDay,
+      workspaceName,
+      workspaces,
+      perModel: perModelUsage,
     };
 
     if (lastMod) {
@@ -637,12 +722,14 @@ export async function fetchDashboardData(
   }
 
   // Run with concurrency limit
+  const failedDetails: FailedCascade[] = [];
   for (let i = 0; i < entries.length; i += CONCURRENCY) {
     const batch = entries.slice(i, i + CONCURRENCY);
     const results = await Promise.all(batch.map((e) => processCascade(creds, e)));
     for (const r of results) {
       if (!r.ok) {
         failed++;
+        failedDetails.push({ cascadeId: r.cascadeId, error: r.error });
         continue;
       }
       const conv = r.stats;
@@ -711,13 +798,65 @@ export async function fetchDashboardData(
       cost: d.cost,
     }));
 
+  // Global per-model aggregate. Sourced from each conversation's `perModel`
+  // map so the panel's model filter and bar chart stay consistent with the
+  // per-conversation expansion rows.
+  const byModelMap = new Map<
+    string,
+    { input: number; output: number; cached: number; cost: number }
+  >();
+  for (const conv of conversations) {
+    const pm = conv.perModel ?? {};
+    for (const [model, d] of Object.entries(pm)) {
+      const entry = byModelMap.get(model) ?? {
+        input: 0,
+        output: 0,
+        cached: 0,
+        cost: 0,
+      };
+      entry.input += d.input;
+      entry.output += d.output;
+      entry.cached += d.cached;
+      entry.cost += d.cost;
+      byModelMap.set(model, entry);
+    }
+  }
+  const byModel: ModelBreakdown[] = Array.from(byModelMap.entries())
+    .map(([model, d]) => ({
+      model,
+      input: d.input,
+      output: d.output,
+      cached: d.cached,
+      tokens: d.input + d.output + d.cached,
+      cost: d.cost,
+    }))
+    .sort((a, b) => b.cost - a.cost || b.tokens - a.tokens);
+
+  // Global per-workspace aggregate. Workspace label is the primary name
+  // extracted from the trajectory summary; cascades with no workspace fall
+  // under the "(no workspace)" bucket.
+  const byWorkspaceMap = new Map<string, { tokens: number; cost: number }>();
+  for (const conv of conversations) {
+    const ws = conv.workspaceName ?? NO_WORKSPACE;
+    const entry = byWorkspaceMap.get(ws) ?? { tokens: 0, cost: 0 };
+    entry.tokens += conv.usage.total;
+    entry.cost += conv.estimatedCost.totalCost;
+    byWorkspaceMap.set(ws, entry);
+  }
+  const byWorkspace: WorkspaceBreakdown[] = Array.from(byWorkspaceMap.entries())
+    .map(([workspace, d]) => ({ workspace, tokens: d.tokens, cost: d.cost }))
+    .sort((a, b) => b.cost - a.cost || b.tokens - a.tokens);
+
   return {
     conversations,
     grandTotal,
     estimatedCost: grandCost,
     fetchedAt: new Date().toISOString(),
     failedConversations: failed,
+    failedDetails,
     fullRefresh: force,
     byDay,
+    byModel,
+    byWorkspace,
   };
 }

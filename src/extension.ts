@@ -35,6 +35,70 @@ function fmtK(n: number): string {
   return n.toString();
 }
 
+function fmtCost(n: number): string {
+  if (n < 0.005) {
+    return "<$0.01";
+  }
+  return "$" + n.toFixed(2);
+}
+
+function localDateString(d: Date): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+/**
+ * Sum the trailing `n` days of per-day buckets (inclusive of today). We walk
+ * the calendar rather than the last-N array entries so sparse days (no
+ * activity) don't push the window out past `n` real days.
+ */
+function sumLastNDays(
+  data: DashboardData,
+  n: number
+): { tokens: number; cost: number; input: number; output: number; cached: number } {
+  const out = { tokens: 0, cost: 0, input: 0, output: 0, cached: 0 };
+  if (!data.byDay || data.byDay.length === 0 || n <= 0) {
+    return out;
+  }
+  const cutoff = new Date();
+  cutoff.setHours(0, 0, 0, 0);
+  cutoff.setDate(cutoff.getDate() - (n - 1));
+  const cutoffStr = localDateString(cutoff);
+  for (const d of data.byDay) {
+    if (d.date >= cutoffStr) {
+      out.tokens += d.tokens;
+      out.cost += d.cost;
+      out.input += d.input;
+      out.output += d.output;
+      out.cached += d.cached;
+    }
+  }
+  return out;
+}
+
+function getTodayTotals(data: DashboardData): {
+  tokens: number;
+  cost: number;
+  input: number;
+  output: number;
+  cached: number;
+} {
+  const todayStr = localDateString(new Date());
+  const d = data.byDay.find((x) => x.date === todayStr);
+  if (!d) {
+    return { tokens: 0, cost: 0, input: 0, output: 0, cached: 0 };
+  }
+  return {
+    tokens: d.tokens,
+    cost: d.cost,
+    input: d.input,
+    output: d.output,
+    cached: d.cached,
+  };
+}
+
 function getRefreshIntervalMs(): number {
   const cfg = vscode.workspace.getConfiguration("windsurfTokenUsage");
   const sec = cfg.get<number>("refreshIntervalSeconds", DEFAULT_REFRESH_SECONDS);
@@ -85,14 +149,21 @@ async function doCoreRefresh(opts: { force?: boolean }): Promise<void> {
   }
 
   const t = lastData.grandTotal;
-  statusBarItem.text = `$(dashboard) ${fmtK(t.total)} tokens`;
-  const cost = lastData.estimatedCost.totalCost;
-  const costStr = cost < 0.005 ? "<$0.01" : "$" + cost.toFixed(2);
+  const today = getTodayTotals(lastData);
+  const last30 = sumLastNDays(lastData, 30);
+  statusBarItem.text = `$(dashboard) Today ${fmtK(today.tokens)} · 30d ${fmtK(last30.tokens)}`;
   const failedLine =
     lastData.failedConversations > 0
       ? `\n⚠ ${lastData.failedConversations} conversation(s) failed to load`
       : "";
-  statusBarItem.tooltip = `Windsurf Token Usage\nInput: ${fmtK(t.inputTokens)} · Output: ${fmtK(t.outputTokens)} · Cached: ${fmtK(t.cachedTokens)}\nEst. API Cost: ${costStr}\n${lastData.conversations.length} conversations${failedLine}\nClick to open dashboard`;
+  statusBarItem.tooltip =
+    `Windsurf Token Usage` +
+    `\nToday: ${fmtK(today.tokens)} tokens · ${fmtCost(today.cost)}` +
+    `\nLast 30 days: ${fmtK(last30.tokens)} tokens · ${fmtCost(last30.cost)}` +
+    `\nAll time: ${fmtK(t.total)} tokens · ${fmtCost(lastData.estimatedCost.totalCost)}` +
+    `\nInput ${fmtK(t.inputTokens)} · Output ${fmtK(t.outputTokens)} · Cached ${fmtK(t.cachedTokens)}` +
+    `\n${lastData.conversations.length} conversations${failedLine}` +
+    `\nClick to open dashboard`;
 
   // Persist today's cumulative snapshot; derive per-day deltas for the view.
   try {

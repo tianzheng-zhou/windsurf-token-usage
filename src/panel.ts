@@ -1,15 +1,30 @@
 import * as vscode from "vscode";
+import * as crypto from "crypto";
 import { getPanelHtml, getLoadingHtml } from "./webview";
 import type { DashboardData } from "./types";
 import type { DailyDelta } from "./history";
 
 /**
- * Detail panel that opens in the editor area (ViewColumn) so the dashboard
- * has room to breathe. For Phase 1 this is a thin wrapper that reuses the
- * exact same HTML renderer the sidebar view uses — same content, more width.
- *
- * A later phase can swap the renderer for an enriched (scripts-enabled,
- * tabbed, sortable) version without touching call sites.
+ * Commands the webview is allowed to trigger via postMessage. Kept as an
+ * explicit allowlist so a compromised webview can't invoke arbitrary
+ * VS Code commands through this bridge.
+ */
+const PANEL_COMMANDS: ReadonlySet<string> = new Set([
+  "windsurf-token-usage.refresh",
+  "windsurf-token-usage.refreshFull",
+  "windsurf-token-usage.clearHistory",
+]);
+
+function generateNonce(): string {
+  // 128-bit nonce, base64url — plenty for CSP and no padding issues.
+  return crypto.randomBytes(16).toString("base64").replace(/[+/=]/g, "");
+}
+
+/**
+ * Detail panel opens in the editor area (ViewColumn) so the dashboard has
+ * room to breathe. As of 0.3, it runs its own scripts-enabled UI with a
+ * strict per-render CSP nonce; the webview posts command messages back to
+ * the host for refresh / full-refresh / clear-history.
  */
 export class TokenUsageDetailPanel {
   public static readonly viewType = "windsurf-token-usage.detail";
@@ -29,6 +44,19 @@ export class TokenUsageDetailPanel {
     this._data = data;
     this._deltas = deltas;
     this._render();
+
+    // Route allowlisted webview-initiated commands back to the extension
+    // host. Anything unrecognised is dropped silently — the webview cannot
+    // reach into VS Code APIs beyond what we opt it into here.
+    this._panel.webview.onDidReceiveMessage((msg: any) => {
+      if (!msg || typeof msg.cmd !== "string") {
+        return;
+      }
+      if (!PANEL_COMMANDS.has(msg.cmd)) {
+        return;
+      }
+      void vscode.commands.executeCommand(msg.cmd);
+    });
 
     // When the user closes the panel, drop our reference so the next
     // `show()` creates a fresh one.
@@ -58,8 +86,12 @@ export class TokenUsageDetailPanel {
       "Windsurf Token Usage",
       vscode.ViewColumn.Active,
       {
-        enableScripts: false,
+        // Scripts are required for the interactive filters / sortable
+        // table / row expansion. CSP is enforced inline by getPanelHtml
+        // with a per-render nonce.
+        enableScripts: true,
         retainContextWhenHidden: true,
+        localResourceRoots: [],
       }
     );
     panel.iconPath = new vscode.ThemeIcon("dashboard") as any;
@@ -92,8 +124,16 @@ export class TokenUsageDetailPanel {
   }
 
   private _render(): void {
-    this._panel.webview.html = this._data
-      ? getPanelHtml(this._data, this._deltas)
-      : getLoadingHtml(this._deltas);
+    if (this._data) {
+      // Regenerate the nonce on every render so a stale script tag from a
+      // previous paint can't reuse the new content's permissions.
+      const nonce = generateNonce();
+      this._panel.webview.html = getPanelHtml(this._data, this._deltas, {
+        nonce,
+        cspSource: this._panel.webview.cspSource,
+      });
+    } else {
+      this._panel.webview.html = getLoadingHtml(this._deltas);
+    }
   }
 }

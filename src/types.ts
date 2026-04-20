@@ -50,6 +50,24 @@ export interface ConversationStats {
    * extension version populated the cache (treated as empty on read).
    */
   byDay?: Record<string, { input: number; output: number; cached: number; cost: number }>;
+  /**
+   * Primary workspace label for this cascade (first workspace's repo
+   * computedName, or last segment of its folder URI, or "(no workspace)").
+   * Absent on cache entries written by pre-0.3 versions → treated as a
+   * cache miss so those conversations are re-fetched.
+   */
+  workspaceName?: string;
+  /**
+   * Deduped list of every workspace name touched by this cascade. Populated
+   * alongside `workspaceName`; kept around so a future multi-select filter
+   * can match a cascade against any of its workspaces.
+   */
+  workspaces?: string[];
+  /**
+   * Per-model token + cost breakdown for this conversation. Key is the
+   * Windsurf model UID. Absent on pre-0.3 cache entries.
+   */
+  perModel?: Record<string, { input: number; output: number; cached: number; cost: number }>;
 }
 
 export interface DailyBreakdown {
@@ -63,6 +81,29 @@ export interface DailyBreakdown {
   cost: number;
 }
 
+/** Per-model global aggregate across every conversation. */
+export interface ModelBreakdown {
+  model: string;
+  input: number;
+  output: number;
+  cached: number;
+  tokens: number;
+  cost: number;
+}
+
+/** Per-workspace global aggregate across every conversation. */
+export interface WorkspaceBreakdown {
+  workspace: string;
+  tokens: number;
+  cost: number;
+}
+
+/** One failed cascade fetch with its error message, for UI surfacing. */
+export interface FailedCascade {
+  cascadeId: string;
+  error: string;
+}
+
 export interface DashboardData {
   conversations: ConversationStats[];
   grandTotal: TokenUsage;
@@ -70,6 +111,11 @@ export interface DashboardData {
   fetchedAt: string;
   /** Count of cascades whose steps failed to load this refresh. */
   failedConversations: number;
+  /**
+   * Per-cascade error details. Same length as `failedConversations`.
+   * Surfaced in the detail panel so the user can see *why* a load failed.
+   */
+  failedDetails: FailedCascade[];
   /** Whether this refresh bypassed the per-cascade cache. */
   fullRefresh: boolean;
   /**
@@ -78,4 +124,8 @@ export interface DashboardData {
    * number on the first run, before any cross-day history is accumulated.
    */
   byDay: DailyBreakdown[];
+  /** Per-model global aggregate, sorted by cost descending. */
+  byModel: ModelBreakdown[];
+  /** Per-workspace global aggregate, sorted by cost descending. */
+  byWorkspace: WorkspaceBreakdown[];
 }

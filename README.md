@@ -4,11 +4,20 @@ Track and visualize Windsurf Cascade token consumption in real-time, right insid
 
 ## Features
 
-- **Live status bar** — shows the running total of tokens used across all Cascade conversations, click to open the dashboard.
-- **Side-bar dashboard** — per-conversation breakdown with input / output / cached tokens, model used, and an estimated API cost.
-- **Daily trend charts** — persisted locally, shows Tokens/day and Cost/day as mini SVG sparklines for up to 180 days.
+- **Live status bar** — compact `Today · 30d` tokens at-a-glance; hover for per-category + per-window cost breakdown; click to open the dashboard.
+- **Compact sidebar KPI table** — Today and Total rows × In / Out / Cached / Total / Cost columns. All key numbers in one glance.
+- **Interactive detail panel** — opens in the editor area with scripts-enabled, strict per-render CSP:
+  - **Lookback filter** (Today / 7d / 30d / 90d / All time) affects the KPI "window" row, trend chart, distribution charts, and the conversations table.
+  - **Model and Workspace filters** narrow the conversations list and recompute the per-model / per-workspace distribution charts.
+  - **Tokens/day + Cost/day trend charts** rebuilt for the chosen window.
+  - **Per-model and per-workspace horizontal bar charts**, sorted by cost.
+  - **Sortable conversations table**: click any column header to sort asc/desc; click any row to expand a detail panel with cascade ID, created/updated times, and per-model in/out/cached/cost breakdown.
+  - **Failed-conversation list**: expandable details for any cascade whose steps failed to load this refresh.
+  - **Refresh / Full / Clear History** buttons in the panel, wired via `postMessage` to the host commands.
+- **Daily trend charts** — persisted locally up to 180 days; today's bar is sourced from real per-turn timestamps so it's correct on first refresh.
 - **Auto refresh** — configurable interval; pauses / resumes on config change without reload.
 - **Incremental fetch** — only re-queries Cascades whose `lastModifiedTime` changed since the last refresh; a full refresh is still available on demand.
+- **Locale-aware timestamps** — timestamps render using the user's system locale (replaces the previously hardcoded `zh-CN`).
 - **Safe credential extraction** — reads the Cascade CSRF token via reflection first, with a tightly-scoped HTTP probe as fallback (never rewrites global HTTP prototypes outside a validated local-loopback window).
 
 ## Requirements
@@ -47,7 +56,7 @@ All data stays on your machine. **Nothing is uploaded anywhere.**
 
 - The cost column is an **estimate** based on public list prices at the time of writing (Apr 2026). Several 2026-vintage models (Opus 4.6+, GPT-5.2+, Gemini 3 variants) use best-effort pricing that may drift; treat the dollar figure as a useful relative signal, not an invoice.
 - If Windsurf changes the `devClient` internals or the Connect-RPC response shape, the extension will degrade to "Tokens: N/A" until updated. Try `Refresh Token Data (Full)` first; it clears all caches.
-- Time stamps in the dashboard currently render in `zh-CN` locale regardless of VS Code UI language (will be switched to user locale in a future release).
+- Time stamps now render in the user's system locale (as of 0.3.0). Earlier 0.2.x releases hardcoded `zh-CN`.
 
 ## Development
 
@@ -67,6 +76,20 @@ Launch the extension development host with `F5` from VS Code / Windsurf.
 - No telemetry, no outbound network calls.
 
 ## Changelog
+
+### 0.3.0
+
+- **Status bar upgraded** to `Today · 30d` tokens; hover tooltip gains per-window cost totals and a cached breakdown line.
+- **Sidebar redesign** — compact 2×5 KPI table (Today / Total × In / Out / Cached / Total / Cost) instead of card clusters.
+- **Interactive detail panel** with strict CSP + per-render nonce:
+  - Lookback, Model, and Workspace filters.
+  - Tokens/day + Cost/day sparklines rebuilt for the chosen window.
+  - Per-model and per-workspace horizontal bar charts.
+  - Sortable conversations table; row-click expands cascade ID, timestamps, and per-model breakdown.
+  - Failed-conversation list with per-cascade error messages.
+  - Refresh / Full Refresh / Clear History buttons in the panel toolbar, routed to host commands via postMessage allowlist.
+- **Per-conversation data model extended** with `workspaceName`, `workspaces`, and `perModel` (with cost); the refresh aggregates global `byModel` and `byWorkspace` breakdowns. Pre-0.3 cached entries are invalidated on first 0.3 load so those fields become populated.
+- **Locale-aware timestamps** — rendering switched from hardcoded `zh-CN` to the user's system default.
 
 ### 0.2.4
 
