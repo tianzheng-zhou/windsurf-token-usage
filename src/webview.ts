@@ -180,39 +180,87 @@ function buildQuotaLine(
       ? `\nReason: ${errorReason}`
       : "";
     const hint = "\nOpen \"Windsurf Token Usage\" Output channel for details.";
-    return `<div class="quota-line" title="${escHtml(baseMsg + reason + hint)}"><span class="quota-label">Quota</span><span class="quota-na">N/A</span>${errorReason ? `<span class="quota-reason">${escHtml(errorReason)}</span>` : ""}</div>`;
+    return `<div class="quota-section"><div class="quota-line" title="${escHtml(baseMsg + reason + hint)}"><span class="quota-label">Quota</span><span class="quota-na">N/A</span>${errorReason ? `<span class="quota-reason">${escHtml(errorReason)}</span>` : ""}</div></div>`;
   }
 
-  const parts: string[] = [];
+  const now = new Date();
+  const bars: string[] = [];
 
-  // Daily used %
   if (quota.dailyUsedPct !== undefined) {
-    parts.push(
-      `<span class="quota-item" title="Daily quota used">Daily <b>${Math.round(quota.dailyUsedPct)}%</b></span>`
-    );
+    const dailyTimePct = getDailyTimePct(now);
+    bars.push(buildQuotaBar("Daily", quota.dailyUsedPct, dailyTimePct));
   }
-  // Weekly used %
   if (quota.weeklyUsedPct !== undefined) {
-    parts.push(
-      `<span class="quota-item" title="Weekly quota used">Weekly <b>${Math.round(quota.weeklyUsedPct)}%</b></span>`
-    );
+    const weeklyTimePct = getWeeklyTimePct(now);
+    bars.push(buildQuotaBar("Weekly", quota.weeklyUsedPct, weeklyTimePct));
   }
 
-  if (parts.length === 0) {
-    return `<div class="quota-line"><span class="quota-label">Quota</span><span class="quota-na">N/A</span></div>`;
+  if (bars.length === 0) {
+    return `<div class="quota-section"><div class="quota-line"><span class="quota-label">Quota</span><span class="quota-na">N/A</span></div></div>`;
   }
 
   const tooltip = [
     quota.plan ? `Plan: ${quota.plan}` : null,
-    `Source: ${
-      quota.source === "local-sqlite"
-        ? "state.vscdb apiKey"
-        : "devClient reflection"
-    }`,
   ]
     .filter(Boolean)
     .join("\n");
-  return `<div class="quota-line" title="${escHtml(tooltip)}"><span class="quota-label">Quota</span>${parts.join('<span class="quota-sep">·</span>')}</div>`;
+
+  return `<div class="quota-section" title="${escHtml(tooltip)}">
+    <div class="quota-header"><span class="quota-label">Quota</span>${quota.plan ? `<span class="quota-plan">${escHtml(quota.plan)}</span>` : ""}</div>
+    ${bars.join("\n")}
+  </div>`;
+}
+
+/**
+ * Daily time elapsed %: fraction of the current UTC day that has passed.
+ * Daily quota resets at UTC 00:00.
+ */
+function getDailyTimePct(now: Date): number {
+  const h = now.getUTCHours();
+  const m = now.getUTCMinutes();
+  return ((h * 60 + m) / (24 * 60)) * 100;
+}
+
+/**
+ * Weekly time elapsed %: fraction of the current UTC week that has passed.
+ * Weekly quota resets at UTC Sunday 00:00.
+ */
+function getWeeklyTimePct(now: Date): number {
+  const day = now.getUTCDay(); // 0 = Sunday
+  const h = now.getUTCHours();
+  const m = now.getUTCMinutes();
+  const elapsed = day * 24 * 60 + h * 60 + m;
+  return (elapsed / (7 * 24 * 60)) * 100;
+}
+
+/**
+ * Render a single quota progress bar with two markers:
+ *   - filled portion = quota used %
+ *   - thin vertical line = time elapsed %
+ * Color logic: green if usage ≤ time (on track), orange/red if over pace.
+ */
+function buildQuotaBar(
+  label: string,
+  usedPct: number,
+  timePct: number
+): string {
+  const used = Math.round(usedPct);
+  const time = Math.round(timePct);
+  const overPace = usedPct > timePct + 1;
+  const barColor = overPace ? "var(--bar-warn)" : "var(--bar-ok)";
+  const timeColor = "var(--bar-time)";
+  const tipUsed = `Quota used: ${used}%`;
+  const tipTime = `Time elapsed: ${time}%`;
+  const status = overPace ? " (over pace)" : " (on track)";
+
+  return `<div class="quota-bar-row" title="${tipUsed}\n${tipTime}${status}">
+    <span class="quota-bar-label">${label}</span>
+    <div class="quota-bar-track">
+      <div class="quota-bar-fill" style="width:${used}%;background:${barColor}"></div>
+      <div class="quota-bar-time" style="left:${time}%;border-color:${timeColor}"></div>
+    </div>
+    <span class="quota-bar-pct">${used}%</span>
+  </div>`;
 }
 
 /**
@@ -622,49 +670,104 @@ table.kpi td.kpi-total { color: var(--danger); font-weight: 700; }
 table.kpi td.kpi-cost { color: var(--cost-color); font-weight: 700; }
 table.kpi .kpi-today th { color: var(--accent); }
 
-/* ── Quota line (sidebar only) ────────────────────────────────────────── */
-.quota-line {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: 6px;
+/* ── Quota section (sidebar only) ─────────────────────────────────────── */
+:root {
+  --bar-ok: #4caf50;
+  --bar-warn: #ff9800;
+  --bar-time: rgba(255,255,255,0.7);
+  --bar-track: rgba(255,255,255,0.08);
+}
+.quota-section {
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 6px;
-  padding: 5px 8px;
-  font-family: var(--font-mono);
+  padding: 6px 8px 5px;
+  font-family: var(--font);
   font-size: 11px;
   color: var(--text);
 }
-.quota-line .quota-label {
+.quota-header {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  margin-bottom: 5px;
+}
+.quota-label {
   color: var(--text-dim);
-  font-family: var(--font);
   font-size: 10px;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.3px;
 }
-.quota-line .quota-item b {
+.quota-plan {
   color: var(--accent);
-  font-weight: 700;
-}
-.quota-line .quota-reset {
-  color: var(--text-dim);
   font-size: 10px;
+  font-weight: 600;
 }
-.quota-line .quota-sep {
-  color: var(--text-dim);
-  opacity: 0.6;
-}
-.quota-line .quota-na {
+.quota-na {
   color: var(--text-dim);
   font-style: italic;
+  margin-left: 4px;
 }
-.quota-line .quota-reason {
+.quota-reason {
   color: var(--danger);
   font-size: 10px;
   margin-left: 4px;
   opacity: 0.85;
+}
+/* N/A fallback uses old flex layout */
+.quota-line {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+/* ── Progress bar row ──────────────────────────────────────────────────── */
+.quota-bar-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 3px;
+}
+.quota-bar-row:last-child { margin-bottom: 0; }
+.quota-bar-label {
+  flex: 0 0 46px;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text-dim);
+  text-align: right;
+}
+.quota-bar-track {
+  flex: 1;
+  position: relative;
+  height: 10px;
+  background: var(--bar-track);
+  border-radius: 5px;
+  overflow: visible;
+}
+.quota-bar-fill {
+  position: absolute;
+  top: 0;
+  left: 0;
+  height: 100%;
+  border-radius: 5px;
+  transition: width 0.3s ease;
+}
+.quota-bar-time {
+  position: absolute;
+  top: -2px;
+  height: 14px;
+  width: 0;
+  border-left: 2px solid var(--bar-time);
+  border-radius: 1px;
+  pointer-events: none;
+}
+.quota-bar-pct {
+  flex: 0 0 32px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--accent);
+  text-align: right;
 }
 
 /* ── Panel toolbar buttons ────────────────────────────────────────────── */
