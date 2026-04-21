@@ -184,23 +184,17 @@ function buildQuotaLine(
   }
 
   const parts: string[] = [];
-  if (quota.promptUsed !== undefined || quota.promptLimit !== undefined) {
-    const used = quota.promptUsed ?? 0;
-    const limit = quota.promptLimit;
+
+  // Daily used %
+  if (quota.dailyUsedPct !== undefined) {
     parts.push(
-      `<span class="quota-item" title="Prompt credits used / available">Prompt <b>${fmtK(used)}</b>${limit !== undefined ? ` / ${fmtK(limit)}` : ""}</span>`
+      `<span class="quota-item" title="Daily quota used">Daily <b>${Math.round(quota.dailyUsedPct)}%</b></span>`
     );
   }
-  if (quota.flowUsed !== undefined || quota.flowLimit !== undefined) {
-    const used = quota.flowUsed ?? 0;
-    const limit = quota.flowLimit;
+  // Weekly used %
+  if (quota.weeklyUsedPct !== undefined) {
     parts.push(
-      `<span class="quota-item" title="Flow credits used / available">Flow <b>${fmtK(used)}</b>${limit !== undefined ? ` / ${fmtK(limit)}` : ""}</span>`
-    );
-  }
-  if (quota.resetDate) {
-    parts.push(
-      `<span class="quota-reset" title="Quota reset date">resets ${escHtml(fmtQuotaDate(quota.resetDate))}</span>`
+      `<span class="quota-item" title="Weekly quota used">Weekly <b>${Math.round(quota.weeklyUsedPct)}%</b></span>`
     );
   }
 
@@ -209,17 +203,27 @@ function buildQuotaLine(
   }
 
   const tooltip = [
+    quota.plan ? `Plan: ${quota.plan}` : null,
     `Source: ${
       quota.source === "local-sqlite"
         ? "state.vscdb apiKey"
         : "devClient reflection"
     }`,
-    `Method: ${quota.method}`,
-    quota.plan ? `Plan: ${quota.plan}` : null,
   ]
     .filter(Boolean)
     .join("\n");
   return `<div class="quota-line" title="${escHtml(tooltip)}"><span class="quota-label">Quota</span>${parts.join('<span class="quota-sep">·</span>')}</div>`;
+}
+
+/**
+ * Format a 0..100 number as a percent string with one decimal when small
+ * and integer when close to full, so it stays readable at a glance.
+ */
+function fmtPct(pct: number): string {
+  if (pct >= 10 || pct === 0) {
+    return `${Math.round(pct)}%`;
+  }
+  return `${pct.toFixed(1)}%`;
 }
 
 /**

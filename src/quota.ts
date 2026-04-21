@@ -14,17 +14,28 @@ import { log } from "./logger";
  * depending on what the upstream response populated.
  *
  * Field mapping follows jlcodes99/cockpit-tools' SeatManagementService
- * handling (`build_payload_from_remote`), so we read from
- * `userStatus.planStatus` — the only shape the apiKey path produces.
+ * handling (`build_payload_from_remote`). The server returns
+ * `availablePromptCredits` / `availableFlowCredits` as the **remaining**
+ * balance and `usedPromptCredits` / `usedFlowCredits` as consumption; the
+ * plan's total quota is therefore `used + remaining` — see
+ * `extractFromUserStatusResp()` for the computation.
  */
 export interface QuotaInfo {
-  promptUsed?: number;
-  promptLimit?: number;
-  flowUsed?: number;
-  flowLimit?: number;
-  /** ISO 8601 string — UI formats it compactly. */
+  /** Prompt credits remaining ("available" in server response). */
+  promptRemaining?: number;
+  /** Flow credits remaining. */
+  flowRemaining?: number;
+  /** Daily quota **used** percentage (100 − server's dailyQuotaRemainingPercent). */
+  dailyUsedPct?: number;
+  /** Weekly quota **used** percentage (100 − server's weeklyQuotaRemainingPercent). */
+  weeklyUsedPct?: number;
+  /** Daily quota reset — ISO 8601 string derived from dailyQuotaResetAtUnix. */
+  dailyResetAt?: string;
+  /** Weekly quota reset — ISO 8601 string derived from weeklyQuotaResetAtUnix. */
+  weeklyResetAt?: string;
+  /** Plan end date — ISO 8601 string. */
   resetDate?: string;
-  /** e.g. "pro" / "free" / "ultra" — surfaced in the tooltip. */
+  /** e.g. "pro" / "free" / "ultra" / "Trial" — surfaced in the tooltip. */
   plan?: string;
   /** Which credential source produced this snapshot. */
   source: "local-sqlite" | "devClient-reflection";
@@ -138,6 +149,17 @@ function pickStr(obj: unknown, keys: string[]): string | undefined {
  * or a plain ISO string. cockpit-tools' `parse_proto_timestamp_seconds`
  * handles both — we do the same so the reset date always reaches the UI.
  */
+function unixToIso(s: string | undefined): string | undefined {
+  if (!s) {
+    return undefined;
+  }
+  const n = Number(s);
+  if (!Number.isFinite(n) || n <= 0) {
+    return undefined;
+  }
+  return new Date(n * 1000).toISOString();
+}
+
 function parseResetDate(planStatus: unknown): string | undefined {
   if (!planStatus || typeof planStatus !== "object") {
     return undefined;
@@ -189,22 +211,60 @@ function extractFromUserStatusResp(
     return null;
   }
 
-  const promptLimit = pickNum(planStatus, [
+  // Diagnostic: dump planStatus keys + values so we can see the real shape
+  // the server returns — this is the key to figuring out why credit fields
+  // are sometimes missing.
+  try {
+    const keys = Object.keys(planStatus);
+    const summary = keys
+      .map((k) => {
+        const v = (planStatus as Record<string, unknown>)[k];
+        const t = typeof v;
+        if (t === "number" || t === "string" || t === "boolean") {
+          return `${k}=${JSON.stringify(v)}`;
+        }
+        return `${k}=[${t}]`;
+      })
+      .join(", ");
+    log(`quota: planStatus keys: { ${summary} }`);
+  } catch { /* best effort */ }
+
+  // Absolute remaining credits (for tooltip context).
+  const promptRemaining = pickNum(planStatus, [
     "availablePromptCredits",
     "available_prompt_credits",
   ]);
-  const promptUsed = pickNum(planStatus, [
-    "usedPromptCredits",
-    "used_prompt_credits",
-  ]);
-  const flowLimit = pickNum(planStatus, [
+  const flowRemaining = pickNum(planStatus, [
     "availableFlowCredits",
     "available_flow_credits",
   ]);
-  const flowUsed = pickNum(planStatus, [
-    "usedFlowCredits",
-    "used_flow_credits",
+
+  // Server provides daily/weekly remaining percentages directly.
+  const dailyRemainingPct = pickNum(planStatus, [
+    "dailyQuotaRemainingPercent",
+    "daily_quota_remaining_percent",
   ]);
+  const weeklyRemainingPct = pickNum(planStatus, [
+    "weeklyQuotaRemainingPercent",
+    "weekly_quota_remaining_percent",
+  ]);
+  const dailyUsedPct =
+    dailyRemainingPct !== undefined
+      ? Math.max(0, Math.min(100, 100 - dailyRemainingPct))
+      : undefined;
+  const weeklyUsedPct =
+    weeklyRemainingPct !== undefined
+      ? Math.max(0, Math.min(100, 100 - weeklyRemainingPct))
+      : undefined;
+
+  // Reset timestamps — server sends Unix seconds as strings.
+  const dailyResetAt = unixToIso(
+    pickStr(planStatus, ["dailyQuotaResetAtUnix", "daily_quota_reset_at_unix"])
+  );
+  const weeklyResetAt = unixToIso(
+    pickStr(planStatus, ["weeklyQuotaResetAtUnix", "weekly_quota_reset_at_unix"])
+  );
+
   const resetDate = parseResetDate(planStatus);
   const planInfo =
     (planStatus["planInfo"] as Record<string, unknown> | undefined) ??
@@ -214,16 +274,47 @@ function extractFromUserStatusResp(
     pickStr(planInfo, ["teamsTier", "teams_tier"]) ??
     pickStr(planInfo, ["tier"]);
 
+  // At least one useful field must be present.
   if (
-    promptUsed === undefined &&
-    promptLimit === undefined &&
-    flowUsed === undefined &&
-    flowLimit === undefined
+    dailyUsedPct === undefined &&
+    weeklyUsedPct === undefined &&
+    promptRemaining === undefined &&
+    flowRemaining === undefined
   ) {
     return null;
   }
 
-  return { promptUsed, promptLimit, flowUsed, flowLimit, resetDate, plan };
+  return {
+    promptRemaining,
+    flowRemaining,
+    dailyUsedPct,
+    weeklyUsedPct,
+    dailyResetAt,
+    weeklyResetAt,
+    resetDate,
+    plan,
+  };
+}
+
+/**
+ * Mirror of cockpit-tools' `total_prompt` / `total_flow` fallback logic:
+ *   (available, used) -> Some((available + used).max(0))
+ *   (available, None) -> Some(available.max(0))   // assume zero used
+ *   (None, _)         -> None                      // no total available
+ * Negative inputs are clamped to 0 because the server occasionally returns
+ * small negatives for grace-period accounts.
+ */
+function computeTotal(
+  remaining: number | undefined,
+  used: number | undefined
+): number | undefined {
+  if (remaining !== undefined && used !== undefined) {
+    return Math.max(0, remaining + used);
+  }
+  if (remaining !== undefined) {
+    return Math.max(0, remaining);
+  }
+  return undefined;
 }
 
 // ── Remote call ───────────────────────────────────────────────────────────
@@ -394,6 +485,14 @@ async function tryWithCredentials(
       error: "server returned no planStatus",
     };
   }
+  // Success log
+  const f = (n: number | undefined) => (n === undefined ? "?" : String(n));
+  log(
+    `quota: OK (source=${source}) ` +
+      `dailyUsed=${f(extracted.dailyUsedPct)}% weeklyUsed=${f(extracted.weeklyUsedPct)}% ` +
+      `promptRemaining=${f(extracted.promptRemaining)} flowRemaining=${f(extracted.flowRemaining)} ` +
+      `plan=${extracted.plan ?? "?"}`
+  );
   return {
     quota: { ...extracted, source, method: "GetUserStatus" },
     error: null,
