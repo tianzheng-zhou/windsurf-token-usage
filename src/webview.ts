@@ -132,31 +132,40 @@ export function getSidebarHtml(data: DashboardData, _deltas: DailyDelta[] = []):
     <a class="open-details" href="command:windsurf-token-usage.openPanel" title="Open the full dashboard in the editor area">Open Details →</a>
   </div>
 
+  ${buildQuotaLine(data.quota ?? null, data.quotaError ?? null)}
+
   <table class="kpi">
     <thead>
-      <tr><th></th><th>In</th><th>Out</th><th>Cached</th><th>Total</th><th>Cost</th></tr>
+      <tr><th></th><th class="kpi-today-h">Today</th><th>Total</th></tr>
     </thead>
     <tbody>
-      <tr class="kpi-today">
-        <th scope="row">Today</th>
-        <td>${fmtK(today.input)}</td>
-        <td>${fmtK(today.output)}</td>
-        <td>${fmtK(today.cached)}</td>
-        <td class="kpi-total">${fmtK(today.tokens)}</td>
-        <td class="kpi-cost">${fmtCost(today.cost)}</td>
-      </tr>
-      <tr class="kpi-grand">
-        <th scope="row">Total</th>
+      <tr>
+        <th scope="row">In</th>
+        <td class="kpi-today-v">${fmtK(today.input)}</td>
         <td>${fmtK(grandTotal.inputTokens)}</td>
+      </tr>
+      <tr>
+        <th scope="row">Out</th>
+        <td class="kpi-today-v">${fmtK(today.output)}</td>
         <td>${fmtK(grandTotal.outputTokens)}</td>
+      </tr>
+      <tr>
+        <th scope="row">Cached</th>
+        <td class="kpi-today-v">${fmtK(today.cached)}</td>
         <td>${fmtK(grandTotal.cachedTokens)}</td>
+      </tr>
+      <tr>
+        <th scope="row">Total</th>
+        <td class="kpi-today-v kpi-total">${fmtK(today.tokens)}</td>
         <td class="kpi-total">${fmtK(grandTotal.total)}</td>
+      </tr>
+      <tr>
+        <th scope="row">Cost</th>
+        <td class="kpi-today-v kpi-cost">${fmtCost(today.cost)}</td>
         <td class="kpi-cost">${fmtCost(estimatedCost.totalCost)}</td>
       </tr>
     </tbody>
   </table>
-
-  ${buildQuotaLine(data.quota ?? null, data.quotaError ?? null)}
 </body>
 </html>`;
 }
@@ -212,23 +221,37 @@ function buildQuotaLine(
 }
 
 /**
- * Daily time elapsed %: fraction of the current UTC day that has passed.
- * Daily quota resets at UTC 00:00.
+ * Convert a Date to minutes-since-midnight in the PST (UTC-8) timezone.
+ * Windsurf quota resets are anchored to fixed PST (not PDT), which is
+ * UTC-8 year-round.  That means resets happen at UTC 08:00 every day
+ * (= Beijing 16:00, PST 00:00).
+ */
+function pstParts(now: Date): { day: number; h: number; m: number } {
+  // UTC-8 = subtract 8 hours from UTC.  We work in minutes to avoid
+  // negative-modulo pitfalls.
+  const utcTotal = now.getUTCDay() * 24 * 60 + now.getUTCHours() * 60 + now.getUTCMinutes();
+  const WEEK = 7 * 24 * 60;
+  const pstTotal = ((utcTotal - 8 * 60) % WEEK + WEEK) % WEEK;
+  const day = Math.floor(pstTotal / (24 * 60));       // 0=Sun
+  const dayMin = pstTotal - day * 24 * 60;
+  return { day, h: Math.floor(dayMin / 60), m: dayMin % 60 };
+}
+
+/**
+ * Daily time elapsed %: fraction of the current PST day that has passed.
+ * Daily quota resets at PST 00:00 (= UTC 08:00 = Beijing 16:00).
  */
 function getDailyTimePct(now: Date): number {
-  const h = now.getUTCHours();
-  const m = now.getUTCMinutes();
+  const { h, m } = pstParts(now);
   return ((h * 60 + m) / (24 * 60)) * 100;
 }
 
 /**
- * Weekly time elapsed %: fraction of the current UTC week that has passed.
- * Weekly quota resets at UTC Sunday 00:00.
+ * Weekly time elapsed %: fraction of the current PST week that has passed.
+ * Weekly quota resets at PST Sunday 00:00 (= UTC Sunday 08:00 = Beijing Sunday 16:00).
  */
 function getWeeklyTimePct(now: Date): number {
-  const day = now.getUTCDay(); // 0 = Sunday
-  const h = now.getUTCHours();
-  const m = now.getUTCMinutes();
+  const { day, h, m } = pstParts(now);
   const elapsed = day * 24 * 60 + h * 60 + m;
   return (elapsed / (7 * 24 * 60)) * 100;
 }
@@ -668,7 +691,8 @@ table.kpi tbody tr + tr td {
 table.kpi td { color: var(--text); }
 table.kpi td.kpi-total { color: var(--danger); font-weight: 700; }
 table.kpi td.kpi-cost { color: var(--cost-color); font-weight: 700; }
-table.kpi .kpi-today th { color: var(--accent); }
+table.kpi .kpi-today-h { color: var(--accent); }
+table.kpi .kpi-today-v { color: var(--accent); }
 
 /* ── Quota section (sidebar only) ─────────────────────────────────────── */
 :root {
